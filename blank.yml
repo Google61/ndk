@@ -1,0 +1,18 @@
+name: php-cs-fixer
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ndk:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+   
+    - name: Copy NDK
+      run: cp -R $ANDROID_NDK_HOME/* .
+
+    - uses: stefanzweifel/git-auto-commit-action@v4
+      with:
+        commit_message: NDK
