@@ -9,9 +9,19 @@ jobs:
 
     steps:
     - uses: actions/checkout@v2
-   
+    - name: Clean
+      run: rm -R *
+     
+    - uses: nttld/setup-ndk@v1
+      id: setup-ndk
+      with:
+        ndk-version: r10e
+        add-to-path: false
+      
     - name: Copy NDK
       run: cp -R $ANDROID_NDK_HOME/* .
+      env:
+        ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
 
     - uses: stefanzweifel/git-auto-commit-action@v4
       with:
