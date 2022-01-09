@@ -17,23 +17,11 @@
 $(call assert-defined,LOCAL_MODULE)
 $(call module-restore-locals,$(LOCAL_MODULE))
 
-# As in build-module.mk, eval sucks. Manually unstash the flags variations to
-# preserve -Werror=#warnings.
-LOCAL_ASFLAGS := $(__ndk_modules.$(LOCAL_MODULE).ASFLAGS)
-LOCAL_ASMFLAGS := $(__ndk_modules.$(LOCAL_MODULE).ASMFLAGS)
-LOCAL_CFLAGS := $(__ndk_modules.$(LOCAL_MODULE).CFLAGS)
-LOCAL_CLANG_TIDY_FLAGS := $(__ndk_modules.$(LOCAL_MODULE).CLANG_TIDY_FLAGS)
-LOCAL_CONLYFLAGS := $(__ndk_modules.$(LOCAL_MODULE).CONLYFLAGS)
-LOCAL_CPPFLAGS := $(__ndk_modules.$(LOCAL_MODULE).CPPFLAGS)
-LOCAL_CXXFLAGS := $(__ndk_modules.$(LOCAL_MODULE).CXXFLAGS)
-LOCAL_LDFLAGS := $(__ndk_modules.$(LOCAL_MODULE).LDFLAGS)
-LOCAL_RENDERSCRIPT_FLAGS := $(__ndk_modules.$(LOCAL_MODULE).RENDERSCRIPT_FLAGS)
-
 # For now, only support target (device-specific modules).
 # We may want to introduce support for host modules in the future
 # but that is too experimental for now.
 #
-my := POISONED
+my := TARGET_
 
 # LOCAL_MAKEFILE must also exist and name the Android.mk that
 # included the module build script.
@@ -63,19 +51,37 @@ endif
 # when we detect this case.
 libs_in_ldflags := $(filter -l% %.so %.a,$(LOCAL_LDLIBS) $(LOCAL_LDFLAGS))
 
-# Since the above will glob anything ending in .so or .a, we need to filter out
-# any cases of -Wl,--exclude-libs since we use that to hide symbols in STLs.
-libs_in_ldflags := \
-    $(filter-out -Wl$(comma)--exclude-libs$(comma)%,$(libs_in_ldflags))
+# Remove the system libraries we know about from the warning, it's ok
+# (and actually expected) to link them with -l<name>.
+system_libs := \
+    android \
+    c \
+    dl \
+    jnigraphics \
+    log \
+    m \
+    m_hard \
+    stdc++ \
+    z \
+    EGL \
+    GLESv1_CM \
+    GLESv2 \
+    GLESv3 \
+    OpenSLES \
+    OpenMAXAL \
+    bcc \
+    bcinfo \
+    cutils \
+    gui \
+    RScpp \
+    RScpp_static \
+    RS \
+    ui \
+    utils \
+    mediandk \
+    atomic
 
-include $(BUILD_SYSTEM)/system_libs.mk
-
-# The only way to statically link libomp.a is with
-# `-Wl,-Bstatic -lomp -Wl,-Bdynamic`, so we need to accept `-lomp`.
-# https://github.com/android-ndk/ndk/issues/1028
-NDK_SYSTEM_LIBS += libomp.so
-
-libs_in_ldflags := $(filter-out $(NDK_SYSTEM_LIBS:lib%.so=-l%),$(libs_in_ldflags))
+libs_in_ldflags := $(filter-out $(addprefix -l,$(system_libs)), $(libs_in_ldflags))
 
 ifneq (,$(strip $(libs_in_ldflags)))
   $(call __ndk_info,WARNING:$(LOCAL_MAKEFILE):$(LOCAL_MODULE): non-system libraries in linker flags: $(libs_in_ldflags))
@@ -118,9 +124,9 @@ $(cleantarget): PRIVATE_ABI         := $(TARGET_ARCH_ABI)
 $(cleantarget): PRIVATE_MODULE      := $(LOCAL_MODULE)
 ifneq ($(LOCAL_BUILT_MODULE_NOT_COPIED),true)
 $(cleantarget): PRIVATE_CLEAN_FILES := $(LOCAL_BUILT_MODULE) \
-                                       $(LOCAL_OBJS_DIR)
+                                       $($(my)OBJS)
 else
-$(cleantarget): PRIVATE_CLEAN_FILES := $(LOCAL_OBJS_DIR)
+$(cleantarget): PRIVATE_CLEAN_FILES := $($(my)OBJS)
 endif
 $(cleantarget)::
 	$(call host-echo-build-step,$(PRIVATE_ABI),Clean) "$(PRIVATE_MODULE) [$(PRIVATE_ABI)]"
@@ -164,51 +170,60 @@ ifeq ($(LOCAL_CPP_EXTENSION),)
 endif
 LOCAL_RS_EXTENSION := $(default-rs-extensions)
 
-ifneq ($(NDK_APP_STL),system)
-    LOCAL_CFLAGS += -nostdinc++
-    LOCAL_LDFLAGS += -nostdlib++
-else
-    # TODO: Remove when https://reviews.llvm.org/D55856 is merged.
-    #
-    # The system STL Android.mk will export -lstdc++, but the Clang driver will
-    # helpfully rewrite -lstdc++ to whatever the default C++ stdlib linker
-    # arguments are, except in the presence of -nostdlib and -nodefaultlibs.
-    # That part of the driver does not account for -nostdlib++. We can fix the
-    # behavior by using -stdlib=libstdc++ so it rewrites -lstdc++ to -lstdc++
-    # instead of -lc++.
-    LOCAL_LDFLAGS += -stdlib=libstdc++
-endif
-
 #
 # If LOCAL_ALLOW_UNDEFINED_SYMBOLS is not true, the linker will allow the generation
 # of a binary that uses undefined symbols.
 #
 ifneq ($(LOCAL_ALLOW_UNDEFINED_SYMBOLS),true)
-  LOCAL_LDFLAGS += $(TARGET_NO_UNDEFINED_LDFLAGS)
+  LOCAL_LDFLAGS += $($(my)NO_UNDEFINED_LDFLAGS)
 endif
 
-# We enable fatal linker warnings by default.
-# If LOCAL_DISABLE_FATAL_LINKER_WARNINGS is true, we don't enable this check.
-ifneq ($(LOCAL_DISABLE_FATAL_LINKER_WARNINGS),true)
-  LOCAL_LDFLAGS += -Wl,--fatal-warnings
+# Toolchain by default disallows generated code running from the heap and stack.
+# If LOCAL_DISABLE_NO_EXECUTE is true, we allow that
+#
+ifeq ($(LOCAL_DISABLE_NO_EXECUTE),true)
+  LOCAL_CFLAGS += $($(my)DISABLE_NO_EXECUTE_CFLAGS)
+  LOCAL_LDFLAGS += $($(my)DISABLE_NO_EXECUTE_LDFLAGS)
+else
+  LOCAL_CFLAGS += $($(my)NO_EXECUTE_CFLAGS)
+  LOCAL_LDFLAGS += $($(my)NO_EXECUTE_LDFLAGS)
+endif
+
+# Toolchain by default provides relro and GOT protections.
+# If LOCAL_DISABLE_RELRO is true, we disable the protections.
+#
+ifeq ($(LOCAL_DISABLE_RELRO),true)
+  LOCAL_LDFLAGS += $($(my)DISABLE_RELRO_LDFLAGS)
+else
+  LOCAL_LDFLAGS += $($(my)RELRO_LDFLAGS)
 endif
 
 # By default, we protect against format string vulnerabilities
 # If LOCAL_DISABLE_FORMAT_STRING_CHECKS is true, we disable the protections.
 ifeq ($(LOCAL_DISABLE_FORMAT_STRING_CHECKS),true)
-  LOCAL_CFLAGS += $(TARGET_DISABLE_FORMAT_STRING_CFLAGS)
+  LOCAL_CFLAGS += $($(my)DISABLE_FORMAT_STRING_CFLAGS)
 else
-  LOCAL_CFLAGS += $(TARGET_FORMAT_STRING_CFLAGS)
+  LOCAL_CFLAGS += $($(my)FORMAT_STRING_CFLAGS)
 endif
 
-# http://b.android.com/222239
-# http://b.android.com/220159 (internal http://b/31809417)
-# x86 devices have stack alignment issues.
-ifeq ($(TARGET_ARCH_ABI),x86)
-    ifneq (,$(call lt,$(APP_PLATFORM_LEVEL),24))
-        LOCAL_CFLAGS += -mstackrealign
+# enable PIE for executable beyond certain API level, unless "-static"
+ifneq (,$(filter true,$(NDK_APP_PIE) $(TARGET_PIE)))
+  ifeq ($(call module-get-class,$(LOCAL_MODULE)),EXECUTABLE)
+    ifeq (,$(filter -static,$(TARGET_LDFLAGS) $(LOCAL_LDFLAGS) $(NDK_APP_LDFLAGS)))
+      LOCAL_CFLAGS += -fPIE
+      LOCAL_LDFLAGS += -fPIE -pie
     endif
+  endif
 endif
+
+# Uncomment the following to enable multithreaded ld.gold by default for arm, x86 and x86_64
+# unless (conservatively) -fuse-ld= is specified
+#
+#ifneq (,$(filter $(TARGET_ARCH_ABI), armeabi armeabi-v7a armeabi-v7a-hard x86 x86_64))
+#  ifeq (,$(filter -fuse-ld=,$(TARGET_LDFLAGS) $(LOCAL_LDFLAGS) $(NDK_APP_LDFLAGS)))
+#    LOCAL_LDFLAGS += -Wl,--threads
+#  endif
+#endif
 
 #
 # The original Android build system allows you to use the .arm prefix
@@ -229,9 +244,6 @@ ifdef LOCAL_ARM_MODE
       $(call __ndk_info,   LOCAL_ARM_MODE must be defined to either 'arm' or 'thumb' in $(LOCAL_MAKEFILE) not '$(LOCAL_ARM_MODE)')\
       $(call __ndk_error, Aborting)\
   )
-  my_link_arm_mode := $(LOCAL_ARM_MODE)
-else
-  my_link_arm_mode := thumb
 endif
 
 # As a special case, the original Android build system
@@ -254,6 +266,9 @@ $(call clear-all-src-tags)
 # files
 #
 
+neon_sources  := $(filter %.neon,$(LOCAL_SRC_FILES))
+neon_sources  := $(neon_sources:%.neon=%)
+
 LOCAL_ARM_NEON := $(strip $(LOCAL_ARM_NEON))
 ifdef LOCAL_ARM_NEON
   $(if $(filter-out true false,$(LOCAL_ARM_NEON)),\
@@ -261,15 +276,22 @@ ifdef LOCAL_ARM_NEON
     $(call __ndk_error,Aborting) \
   )
 endif
-
-ifeq ($(LOCAL_ARM_NEON),false)
-  no_neon_sources := $(filter-out %.neon,$(LOCAL_SRC_FILES))
-  no_neon_sources := $(strip $(no_neon_sources))
-  $(call tag-src-files,$(no_neon_sources:%.arm=%),no_neon)
+ifeq ($(LOCAL_ARM_NEON),true)
+  neon_sources += $(LOCAL_SRC_FILES:%.neon=%)
   # tag the precompiled header with 'neon' tag if it exists
   ifneq (,$(LOCAL_PCH))
-    $(call tag-src-files,$(LOCAL_PCH),no_neon)
+    $(call tag-src-files,$(LOCAL_PCH),neon)
   endif
+endif
+
+neon_sources := $(strip $(neon_sources))
+ifdef neon_sources
+  ifeq ($(filter $(TARGET_ARCH_ABI), armeabi-v7a armeabi-v7a-hard x86),)
+    $(call __ndk_info,NEON support is only possible for armeabi-v7a ABI, its variant armeabi-v7a-hard and x86 ABI)
+    $(call __ndk_info,Please add checks against TARGET_ARCH_ABI in $(LOCAL_MAKEFILE))
+    $(call __ndk_error,Aborting)
+  endif
+  $(call tag-src-files,$(neon_sources:%.arm=%),neon)
 endif
 
 LOCAL_SRC_FILES := $(LOCAL_SRC_FILES:%.neon=%)
@@ -288,6 +310,14 @@ ifeq ($(LOCAL_ARM_MODE),arm)
     ifneq (,$(LOCAL_PCH))
         $(call tag-src-files,$(LOCAL_PCH),arm)
     endif
+else
+# For arm, all sources are compiled in thumb mode by default in release mode.
+# Linker should behave similarly
+ifneq ($(filter armeabi%, $(TARGET_ARCH_ABI)),)
+ifneq ($(APP_OPTIM),debug)
+    LOCAL_LDFLAGS += -mthumb
+endif
+endif
 endif
 ifeq ($(LOCAL_ARM_MODE),thumb)
     arm_sources := $(empty)
@@ -371,19 +401,29 @@ ifneq (,$(call module-has-c++-features,$(LOCAL_MODULE),exceptions))
     LOCAL_CPPFLAGS += -fexceptions
 endif
 
+# If we're using the 'system' STL and use rtti or exceptions, then
+# automatically link against the GNU libsupc++ for now.
+#
+ifneq (,$(call module-has-c++-features,$(LOCAL_MODULE),rtti exceptions))
+    ifeq (system,$(NDK_APP_STL))
+      LOCAL_LDLIBS := $(LOCAL_LDLIBS) $(call host-path,$(NDK_ROOT)/sources/cxx-stl/gnu-libstdc++/$(TOOLCHAIN_VERSION)/libs/$(TARGET_ARCH_ABI)/libsupc++$(TARGET_LIB_EXTENSION))
+    endif
+endif
+
 # Set include patch for renderscript
+
+
 ifneq ($(LOCAL_RENDERSCRIPT_INCLUDES_OVERRIDE),)
     LOCAL_RENDERSCRIPT_INCLUDES := $(LOCAL_RENDERSCRIPT_INCLUDES_OVERRIDE)
 else
     LOCAL_RENDERSCRIPT_INCLUDES := \
-        $(RENDERSCRIPT_PLATFORM_HEADER)/scriptc \
         $(RENDERSCRIPT_TOOLCHAIN_HEADER) \
+        $(TARGET_C_INCLUDES)/rs/scriptc \
         $(LOCAL_RENDERSCRIPT_INCLUDES)
 endif
 
-# Only enable the compatibility path when LOCAL_RENDERSCRIPT_COMPATIBILITY is defined.
 RS_COMPAT :=
-ifeq ($(LOCAL_RENDERSCRIPT_COMPATIBILITY),true)
+ifneq ($(call module-is-shared-library,$(LOCAL_MODULE)),)
     RS_COMPAT := true
 endif
 
@@ -401,46 +441,16 @@ ifneq (,$(LOCAL_PCH))
     # Build PCH into obj directory
     LOCAL_BUILT_PCH := $(call get-pch-name,$(LOCAL_PCH))
 
-    # Clang whines about a "c-header" (.h rather than .hpp) being used in C++
-    # mode (note that we use compile-cpp-source to build the header).
-    LOCAL_SRC_FILES_TARGET_CFLAGS.$(LOCAL_PCH) += -x c++-header
-
     # Build PCH
     $(call compile-cpp-source,$(LOCAL_PCH),$(LOCAL_BUILT_PCH).gch)
 
-    # The PCH must be compiled the same way as the sources (thumb vs arm, neon
-    # vs non-neon must match). This means that we'd have to generate a PCH for
-    # each combination of foo.c.arm and foo.c.neon (do we allow
-    # foo.c.arm.neon?).
-    #
-    # Since files with those source tags should be the minority, precompiling
-    # that header might be a net loss compared to just using it normally. As
-    # such, we only use the PCH for the default compilation mode for the module.
-    #
-    # See https://github.com/android-ndk/ndk/issues/14
-    TAGS_TO_FILTER :=
-
-    # If neon is off, strip out .neon files.
-    ifneq (true,$(LOCAL_ARM_NEON))
-        TAGS_TO_FILTER += neon
-    endif
-
-    # If we're building thumb, strip out .arm files.
-    ifneq (arm,$(LOCAL_ARM_MODE))
-        TAGS_TO_FILTER += arm
-    endif
-
-    # There is no .thumb. No need to filter them out if we're building ARM.
-
-    allowed_src := $(foreach src,$(filter $(all_cpp_patterns),$(LOCAL_SRC_FILES)),\
-        $(if $(filter $(TAGS_TO_FILTER),$(LOCAL_SRC_FILES_TAGS.$(src))),,$(src))\
-    )
-    # All files without tags depend on PCH
-    $(foreach src,$(allowed_src),\
+    # All obj files are dependent on the PCH
+    $(foreach src,$(filter $(all_cpp_patterns),$(LOCAL_SRC_FILES)),\
         $(eval $(LOCAL_OBJS_DIR)/$(call get-object-name,$(src)) : $(LOCAL_OBJS_DIR)/$(LOCAL_BUILT_PCH).gch)\
     )
-    # Make sure those files are built with PCH
-    $(call add-src-files-target-cflags,$(allowed_src),-Winvalid-pch -include $(LOCAL_OBJS_DIR)/$(LOCAL_BUILT_PCH))
+
+    # Files from now on build with PCH
+    LOCAL_CPPFLAGS += -Winvalid-pch -include $(LOCAL_OBJS_DIR)/$(LOCAL_BUILT_PCH)
 
     # Insert PCH dir at beginning of include search path
     LOCAL_C_INCLUDES := \
@@ -450,26 +460,6 @@ endif
 
 # Build the sources to object files
 #
-
-# Include RenderScript headers if rs files are found.
-ifneq ($(filter $(all_rs_patterns),$(LOCAL_SRC_FILES)),)
-    LOCAL_C_INCLUDES += \
-        $(RENDERSCRIPT_PLATFORM_HEADER) \
-        $(RENDERSCRIPT_PLATFORM_HEADER)/cpp \
-        $(TARGET_OBJS)/$(LOCAL_MODULE)
-endif
-
-do_tidy := $(NDK_APP_CLANG_TIDY)
-ifdef LOCAL_CLANG_TIDY
-    do_tidy := $(LOCAL_CLANG_TIDY)
-endif
-
-ifeq ($(do_tidy),true)
-    $(foreach src,$(filter %.c,$(LOCAL_SRC_FILES)),\
-        $(call clang-tidy-c,$(src),$(call get-object-name,$(src))))
-    $(foreach src,$(filter $(all_cpp_patterns),$(LOCAL_SRC_FILES)),\
-        $(call clang-tidy-cpp,$(src),$(call get-object-name,$(src))))
-endif
 
 $(foreach src,$(filter %.c,$(LOCAL_SRC_FILES)), $(call compile-c-source,$(src),$(call get-object-name,$(src))))
 $(foreach src,$(filter %.S %.s,$(LOCAL_SRC_FILES)), $(call compile-s-source,$(src),$(call get-object-name,$(src))))
@@ -495,37 +485,16 @@ CLEAN_OBJS_DIRS     += $(LOCAL_OBJS_DIR)
 # Handle the static and shared libraries this module depends on
 #
 
-linker_ldflags :=
-using_lld := false
-ifeq ($(APP_LD),lld)
-    linker_ldflags := -fuse-ld=lld
-    using_lld := true
-endif
-
-combined_ldflags := $(TARGET_LDFLAGS) $(NDK_APP_LDFLAGS) $(LOCAL_LDFLAGS)
-ndk_fuse_ld_flags := $(filter -fuse-ld=%,$(combined_ldflags))
-ndk_used_linker := $(lastword $(ndk_fuse_ld_flags))
-ifeq ($(ndk_used_linker),-fuse-ld=lld)
-    using_lld := true
-else
-    # In case the user has set APP_LD=lld but also disabled it for a specific
-    # module.
-    ifneq ($(ndk_used_linker),)
-        using_lld := false
+# If LOCAL_LDLIBS contains anything like -l<library> then
+# prepend a -L$(SYSROOT_LINK)/usr/lib to it to ensure that the linker
+# looks in the right location
+#
+ifneq ($(filter -l%,$(LOCAL_LDLIBS)),)
+    LOCAL_LDLIBS := -L$(call host-path,$(SYSROOT_LINK)/usr/lib) $(LOCAL_LDLIBS)
+    ifneq ($(filter x86_64 mips64,$(TARGET_ARCH_ABI)),)
+        LOCAL_LDLIBS := -L$(call host-path,$(SYSROOT_LINK)/usr/lib64) $(LOCAL_LDLIBS)
     endif
 endif
-
-# https://github.com/android/ndk/issues/885
-# If we're using LLD we need to use a slower build-id algorithm to work around
-# the old version of LLDB in Android Studio, which doesn't understand LLD's
-# default hash ("fast").
-ifeq ($(using_lld),true)
-    linker_ldflags += -Wl,--build-id=sha1
-else
-    linker_ldflags += -Wl,--build-id
-endif
-
-my_ldflags := $(TARGET_LDFLAGS) $(linker_ldflags) $(NDK_APP_LDFLAGS) $(LOCAL_LDFLAGS)
 
 # When LOCAL_SHORT_COMMANDS is defined to 'true' we are going to write the
 # list of all object files and/or static/shared libraries that appear on the
@@ -543,16 +512,15 @@ $(call generate-file-dir,$(LOCAL_BUILT_MODULE))
 
 $(LOCAL_BUILT_MODULE): PRIVATE_OBJECTS := $(LOCAL_OBJECTS)
 $(LOCAL_BUILT_MODULE): PRIVATE_LIBGCC := $(TARGET_LIBGCC)
-$(LOCAL_BUILT_MODULE): PRIVATE_LIBATOMIC := $(TARGET_LIBATOMIC)
 
 $(LOCAL_BUILT_MODULE): PRIVATE_LD := $(TARGET_LD)
-$(LOCAL_BUILT_MODULE): PRIVATE_LDFLAGS := $(my_ldflags)
+$(LOCAL_BUILT_MODULE): PRIVATE_LDFLAGS := $(TARGET_LDFLAGS) $(LOCAL_LDFLAGS) $(NDK_APP_LDFLAGS)
 $(LOCAL_BUILT_MODULE): PRIVATE_LDLIBS  := $(LOCAL_LDLIBS) $(TARGET_LDLIBS)
 
 $(LOCAL_BUILT_MODULE): PRIVATE_NAME := $(notdir $(LOCAL_BUILT_MODULE))
 $(LOCAL_BUILT_MODULE): PRIVATE_CXX := $(TARGET_CXX)
 $(LOCAL_BUILT_MODULE): PRIVATE_CC := $(TARGET_CC)
-$(LOCAL_BUILT_MODULE): PRIVATE_SYSROOT_API_LIB_DIR := $(SYSROOT_API_LIB_DIR)
+$(LOCAL_BUILT_MODULE): PRIVATE_SYSROOT_LINK := $(SYSROOT_LINK)
 
 ifeq ($(call module-get-class,$(LOCAL_MODULE)),STATIC_LIBRARY)
 
@@ -576,8 +544,7 @@ ar_objects := $(call host-path,$(LOCAL_OBJECTS))
 ifeq ($(LOCAL_SHORT_COMMANDS),true)
     $(call ndk_log,Building static library module '$(LOCAL_MODULE)' with linker list file)
     ar_list_file := $(LOCAL_OBJS_DIR)/archiver.list
-    $(call generate-list-file,\
-        $(call escape-backslashes,$(ar_objects)),$(ar_list_file))
+    $(call generate-list-file,$(ar_objects),$(ar_list_file))
     ar_objects   := @$(call host-path,$(ar_list_file))
     $(LOCAL_BUILT_MODULE): $(ar_list_file)
 endif
@@ -590,7 +557,7 @@ ifeq (true,$(thin_archive))
 endif
 
 $(LOCAL_BUILT_MODULE): PRIVATE_ABI := $(TARGET_ARCH_ABI)
-$(LOCAL_BUILT_MODULE): PRIVATE_AR := $(TARGET_AR) $(ar_flags) $(TARGET_AR_FLAGS)
+$(LOCAL_BUILT_MODULE): PRIVATE_AR := $(TARGET_AR) $(ar_flags)
 $(LOCAL_BUILT_MODULE): PRIVATE_AR_OBJECTS := $(ar_objects)
 $(LOCAL_BUILT_MODULE): PRIVATE_BUILD_STATIC_LIB := $(cmd-build-static-library)
 
@@ -644,32 +611,6 @@ shared_libs := $(call module-filter-shared-libraries,$(all_libs))
 static_libs := $(call module-filter-static-libraries,$(all_libs))
 whole_static_libs := $(call module-extract-whole-static-libs,$(LOCAL_MODULE),$(static_libs))
 static_libs := $(filter-out $(whole_static_libs),$(static_libs))
-all_defined_libs := $(shared_libs) $(static_libs) $(whole_static_libs)
-undefined_libs := $(filter-out $(all_defined_libs),$(all_libs))
-
-ifdef undefined_libs
-    $(call __ndk_warning,Module $(LOCAL_MODULE) depends on undefined modules: $(undefined_libs))
-
-    # https://github.com/android-ndk/ndk/issues/208
-    # ndk-build didn't used to fail the build for a missing dependency. This
-    # seems to have always been the behavior, so there's a good chance that
-    # there are builds out there that depend on this behavior (as of right now,
-    # anything using libc++ on ARM has this problem because of libunwind).
-    #
-    # By default we will abort in this situation because this is so completely
-    # broken. A user may define APP_ALLOW_MISSING_DEPS to "true" in their
-    # Application.mk or on the command line to revert to the old, broken
-    # behavior.
-    ifneq ($(APP_ALLOW_MISSING_DEPS),true)
-        $(call __ndk_error,Note that old versions of ndk-build silently ignored \
-            this error case. If your project worked on those versions$(comma) \
-            the missing libraries were not needed and you can remove those \
-            dependencies from the module to fix your build. \
-            Alternatively$(comma) set APP_ALLOW_MISSING_DEPS=true to allow \
-            missing dependencies.)
-        $(call __ndk_error,Aborting.)
-    endif
-endif
 
 $(call -ndk-mod-debug,module $(LOCAL_MODULE) [$(LOCAL_BUILT_MODULE)])
 $(call -ndk-mod-debug,.  all_libs='$(all_libs)')
@@ -701,8 +642,7 @@ ifeq ($(LOCAL_SHORT_COMMANDS),true)
     linker_options   := $(linker_objects_and_libraries)
     linker_list_file := $(LOCAL_OBJS_DIR)/linker.list
     linker_objects_and_libraries := @$(call host-path,$(linker_list_file))
-    $(call generate-list-file,\
-        $(call escape-backslashes,$(linker_options)),$(linker_list_file))
+    $(call generate-list-file,$(linker_options),$(linker_list_file))
     $(LOCAL_BUILT_MODULE): $(linker_list_file)
 endif
 
@@ -749,12 +689,6 @@ $(LOCAL_BUILT_MODULE): $(LOCAL_OBJECTS)
 	$(hide) $(call host-cp,$<,$@)
 endif
 
-ifeq ($(LOCAL_STRIP_MODE),)
-    NDK_STRIP_MODE := $(NDK_APP_STRIP_MODE)
-else
-    NDK_STRIP_MODE := $(LOCAL_STRIP_MODE)
-endif
-
 #
 # If this is an installable module
 #
@@ -765,13 +699,16 @@ $(LOCAL_INSTALLED): PRIVATE_SRC         := $(LOCAL_BUILT_MODULE)
 $(LOCAL_INSTALLED): PRIVATE_DST_DIR     := $(NDK_APP_DST_DIR)
 $(LOCAL_INSTALLED): PRIVATE_DST         := $(LOCAL_INSTALLED)
 $(LOCAL_INSTALLED): PRIVATE_STRIP       := $(TARGET_STRIP)
-$(LOCAL_INSTALLED): PRIVATE_STRIP_MODE  := $(NDK_STRIP_MODE)
 $(LOCAL_INSTALLED): PRIVATE_STRIP_CMD   := $(call cmd-strip, $(PRIVATE_DST))
+$(LOCAL_INSTALLED): PRIVATE_OBJCOPY     := $(TARGET_OBJCOPY)
+$(LOCAL_INSTALLED): PRIVATE_OBJCOPY_CMD := $(call cmd-add-gnu-debuglink, $(PRIVATE_DST), $(PRIVATE_SRC))
 
 $(LOCAL_INSTALLED): $(LOCAL_BUILT_MODULE) clean-installed-binaries
 	$(call host-echo-build-step,$(PRIVATE_ABI),Install) "$(PRIVATE_NAME) => $(call pretty-dir,$(PRIVATE_DST))"
 	$(hide) $(call host-install,$(PRIVATE_SRC),$(PRIVATE_DST))
-	$(if $(filter none,$(PRIVATE_STRIP_MODE)),,$(hide) $(PRIVATE_STRIP_CMD))
+	$(hide) $(PRIVATE_STRIP_CMD)
+
+#$(hide) $(PRIVATE_OBJCOPY_CMD)
 
 $(call generate-file-dir,$(LOCAL_INSTALLED))
 

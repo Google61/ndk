@@ -25,24 +25,26 @@
  * OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
-
 #ifndef NDK_ANDROID_SUPPORT_INTTYPES_H
 #define NDK_ANDROID_SUPPORT_INTTYPES_H
 
 #include_next <inttypes.h>
 
-__BEGIN_DECLS
+#if !defined(__LP64__)
 
-#if __ANDROID_API__ < __ANDROID_API_K__
-intmax_t imaxabs(intmax_t) __attribute_const__;
-imaxdiv_t imaxdiv(intmax_t, intmax_t) __attribute_const__;
+#include <wchar.h>
+
+#ifdef __cplusplus
+extern "C" {
 #endif
 
-#if __ANDROID_API__ < __ANDROID_API_L__
-intmax_t wcstoimax(const wchar_t* __restrict, wchar_t** __restrict, int);
-uintmax_t wcstoumax(const wchar_t* __restrict, wchar_t** __restrict, int);
+intmax_t imaxabs(intmax_t) __attribute__((__const__));
+imaxdiv_t imaxdiv(intmax_t, intmax_t) __attribute__((__const__));
+
+#ifdef __cplusplus
+}  // extern "C"
 #endif
 
-__END_DECLS
+#endif // !__LP64__
 
-#endif
+#endif  // NDK_ANDROID_SUPPORT_INTTYPES_H

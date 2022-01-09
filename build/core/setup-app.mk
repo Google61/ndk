@@ -39,10 +39,19 @@ $(foreach __name,$(NDK_APP_VARS),\
 ndk-app-$(_app): $(NDK_APP_MODULES)
 all: ndk-app-$(_app)
 
+# which platform/abi/toolchain are we going to use?
+TARGET_PLATFORM := $(call get,$(_map),APP_PLATFORM)
+ifeq ($(TARGET_PLATFORM),android-L)
+$(call __ndk_warning,WARNING: android-L is renamed as android-21)
+TARGET_PLATFORM := android-21
+endif
+
+
 # The ABI(s) to use
 NDK_APP_ABI := $(subst $(comma),$(space),$(strip $(NDK_APP_ABI)))
 ifndef NDK_APP_ABI
-    NDK_APP_ABI := $(NDK_DEFAULT_ABIS)
+    # the default ABI for now is armeabi
+    NDK_APP_ABI := armeabi
 endif
 
 NDK_ABI_FILTER := $(strip $(NDK_ABI_FILTER))
@@ -55,85 +64,85 @@ endif
 #
 ifeq ($(NDK_APP_ABI),all)
     NDK_APP_ABI := $(NDK_APP_ABI_ALL_EXPANDED)
-else ifeq ($(NDK_APP_ABI),all32)
-    NDK_APP_ABI := $(NDK_APP_ABI_ALL32_EXPANDED)
-else ifeq ($(NDK_APP_ABI),all64)
-    NDK_APP_ABI := $(NDK_APP_ABI_ALL64_EXPANDED)
+    _abis_without_toolchain := $(filter-out $(NDK_ALL_ABIS),$(NDK_APP_ABI))
+    ifneq (,$(_abis_without_toolchain))
+        $(call ndk_log,Remove the following abis expanded from 'all' due to no toolchain: $(_abis_without_toolchain))
+        NDK_APP_ABI := $(filter-out $(_abis_without_toolchain),$(NDK_APP_ABI))
+    endif
 else
+ifeq ($(NDK_APP_ABI),all32)
+    NDK_APP_ABI := $(NDK_APP_ABI_ALL32_EXPANDED)
+    _abis_without_toolchain := $(filter-out $(NDK_ALL_ABIS),$(NDK_APP_ABI))
+    ifneq (,$(_abis_without_toolchain))
+        $(call ndk_log,Remove the following abis expanded from 'all32' due to no toolchain: $(_abis_without_toolchain))
+        NDK_APP_ABI := $(filter-out $(_abis_without_toolchain),$(NDK_APP_ABI))
+    endif
+else
+ifeq ($(NDK_APP_ABI),all64)
+    NDK_APP_ABI := $(NDK_APP_ABI_ALL64_EXPANDED)
+    _abis_without_toolchain := $(filter-out $(NDK_ALL_ABIS),$(NDK_APP_ABI))
+    ifneq (,$(_abis_without_toolchain))
+        $(call ndk_log,Remove the following abis expanded from 'all64' due to no toolchain: $(_abis_without_toolchain))
+        NDK_APP_ABI := $(filter-out $(_abis_without_toolchain),$(NDK_APP_ABI))
+    endif
+else
+    # Plug in the unknown
+    _unknown_abis := $(strip $(filter-out $(NDK_ALL_ABIS),$(NDK_APP_ABI)))
+    ifneq ($(_unknown_abis),)
+        ifeq (1,$(words $(filter-out $(NDK_KNOWN_ARCHS),$(NDK_FOUND_ARCHS))))
+            ifneq ($(filter %bcall,$(_unknown_abis)),)
+                 _unknown_abis_prefix := $(_unknown_abis:%bcall=%)
+                 NDK_APP_ABI := $(NDK_KNOWN_ABI32S:%=$(_unknown_abis_prefix)bc%)
+            else
+                ifneq ($(filter %all,$(_unknown_abis)),)
+                    _unknown_abis_prefix := $(_unknown_abis:%all=%)
+                    NDK_APP_ABI := $(NDK_KNOWN_ABIS:%=$(_unknown_abis_prefix)%)
+                else
+                    $(foreach _abi,$(NDK_KNOWN_ABIS),\
+                        $(eval _unknown_abis := $(subst $(_abi),,$(subst bc$(_abi),,$(_unknown_abis)))) \
+                    )
+                    _unknown_abis_prefix := $(sort $(_unknown_abis))
+                endif
+            endif
+            ifeq (1,$(words $(_unknown_abis_prefix)))
+                NDK_APP_ABI := $(subst $(_unknown_abis_prefix),$(filter-out $(NDK_KNOWN_ARCHS),$(NDK_FOUND_ARCHS)),$(NDK_APP_ABI))
+            endif
+        endif
+	TARGET_PLATFORM := android-21
+    endif
     # check the target ABIs for this application
     _bad_abis = $(strip $(filter-out $(NDK_ALL_ABIS),$(NDK_APP_ABI)))
     ifneq ($(_bad_abis),)
-        ifneq ($(filter $(_bad_abis),armeabi-v7a-hard),)
-            $(call __ndk_info,armeabi-v7a-hard is no longer supported. Use armeabi-v7a.)
-            $(call __ndk_info,See https://android.googlesource.com/platform/ndk/+/master/docs/HardFloatAbi.md)
-        else ifneq ($(filter $(_bad_abis),armeabi),)
-            $(call __ndk_info,The armeabi ABI is no longer supported. Use armeabi-v7a.)
-        else ifneq ($(filter $(_bad_abis),mips mips64),)
-            $(call __ndk_info,MIPS and MIPS64 are no longer supported.)
-        endif
         $(call __ndk_info,NDK Application '$(_app)' targets unknown ABI(s): $(_bad_abis))
         $(call __ndk_info,Please fix the APP_ABI definition in $(NDK_APP_APPLICATION_MK))
         $(call __ndk_error,Aborting)
     endif
 endif
-
-_deprecated_abis := $(filter $(NDK_DEPRECATED_ABIS),$(NDK_APP_ABI))
-ifneq ($(_deprecated_abis),)
-    $(call __ndk_warning,Application targets deprecated ABI(s): $(_deprecated_abis))
-    $(call __ndk_warning,Support for these ABIs will be removed in a future NDK release.)
+endif
 endif
 
-# Clear all installed binaries for this application. This ensures that if the
-# build fails or if you remove a module, you're not going to mistakenly package
-# an obsolete version.
+# Clear all installed binaries for this application
+# This ensures that if the build fails, you're not going to mistakenly
+# package an obsolete version of it. Or if you change the ABIs you're targetting,
+# you're not going to leave a stale shared library for the old one.
 #
-# Historically this would clear every ABI, meaning that the following workflow
-# would leave only x86_64 present in the lib dir on completion:
-#
-#     for abi in armeabi-v7a arm64-v8a x86 x86_64; do
-#         ndk-build APP_ABI=$abi
-#     done
-#
-# This is the workflow used by gradle. They currently override NDK_ALL_ABIS (an
-# internal variable) to workaround this behavior. Changing this behavior allows
-# them to remove their workaround and stop clobbering our implementation
-# details.
 ifeq ($(NDK_APP.$(_app).cleaned_binaries),)
     NDK_APP.$(_app).cleaned_binaries := true
-
-clean-installed-binaries::
-	$(hide) $(call host-rm,$(NDK_APP_ABI:%=$(NDK_APP_LIBS_OUT)/%/*))
-	$(hide) $(call host-rm,$(NDK_APP_ABI:%=$(NDK_APP_LIBS_OUT)/%/gdbserver))
-	$(hide) $(call host-rm,$(NDK_APP_ABI:%=$(NDK_APP_LIBS_OUT)/%/gdb.setup))
+    clean-installed-binaries::
+	$(hide) $(call host-rm,$(NDK_ALL_ABIS:%=$(NDK_APP_LIBS_OUT)/%/lib*$(TARGET_SONAME_EXTENSION)))
+	$(hide) $(call host-rm,$(NDK_ALL_ABIS:%=$(NDK_APP_LIBS_OUT)/%/gdbserver))
+	$(hide) $(call host-rm,$(NDK_ALL_ABIS:%=$(NDK_APP_LIBS_OUT)/%/gdb.setup))
 endif
 
 # Renderscript
 
-RENDERSCRIPT_TOOLCHAIN_PREBUILT_ROOT := \
-    $(NDK_ROOT)/toolchains/renderscript/prebuilt/$(HOST_TAG64)
+RENDERSCRIPT_TOOLCHAIN_ROOT   := $(NDK_ROOT)/toolchains/renderscript
+RENDERSCRIPT_TOOLCHAIN_PREBUILT_ROOT := $(call host-prebuilt-tag,$(RENDERSCRIPT_TOOLCHAIN_ROOT))
 RENDERSCRIPT_TOOLCHAIN_PREFIX := $(RENDERSCRIPT_TOOLCHAIN_PREBUILT_ROOT)/bin/
-RENDERSCRIPT_TOOLCHAIN_HEADER := $(RENDERSCRIPT_TOOLCHAIN_PREBUILT_ROOT)/clang-include
-RENDERSCRIPT_PLATFORM_HEADER := $(RENDERSCRIPT_TOOLCHAIN_PREBUILT_ROOT)/platform/rs
-
-COMPILE_COMMANDS_JSON := $(call host-path,compile_commands.json)
-sub_commands_json :=
+RENDERSCRIPT_TOOLCHAIN_HEADER := $(RENDERSCRIPT_TOOLCHAIN_PREBUILT_ROOT)/lib/clang/3.5/include
 
 # Each ABI
 $(foreach _abi,$(NDK_APP_ABI),\
     $(eval TARGET_ARCH_ABI := $(_abi))\
     $(eval include $(BUILD_SYSTEM)/setup-abi.mk) \
 )
-
-_sub_commands_arg := $(sub_commands_json)
-
-ifeq ($(LOCAL_SHORT_COMMANDS),true)
-compile_commands_list_file := $(NDK_APP_OUT)/compile_commands.list
-_sub_commands_arg := @$(compile_commands_list_file)
-$(compile_commands_list_file): $(sub_commands_json)
-$(call generate-list-file,$(sub_commands_json),$(compile_commands_list_file))
-endif
-
-$(COMPILE_COMMANDS_JSON): PRIVATE_SUB_COMMANDS := $(_sub_commands_arg)
-$(COMPILE_COMMANDS_JSON): $(compile_commands_list_file) $(sub_commands_json)
-	$(hide) $(HOST_PYTHON) $(BUILD_PY)/gen_compile_db.py -o $@ \
-        $(PRIVATE_SUB_COMMANDS)

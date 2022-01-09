@@ -24,6 +24,9 @@ $(call check-defined-LOCAL_MODULE,$(LOCAL_BUILD_SCRIPT))
 $(call check-LOCAL_MODULE,$(LOCAL_MAKEFILE))
 $(call check-LOCAL_MODULE_FILENAME)
 
+# we are building target objects
+my := TARGET_
+
 $(call handle-module-filename,lib,$(TARGET_SONAME_EXTENSION))
 $(call handle-module-built)
 

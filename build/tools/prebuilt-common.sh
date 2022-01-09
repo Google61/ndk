@@ -12,12 +12,12 @@ export LC_ALL=C
 if [ -z "$NDK_BUILDTOOLS_PATH" ]; then
     NDK_BUILDTOOLS_PATH=$(dirname $0)
     if [ ! -f "$NDK_BUILDTOOLS_PATH/prebuilt-common.sh" ]; then
-        echo "INTERNAL ERROR: Please define NDK_BUILDTOOLS_PATH to point to \$NDK/build/tools"
+        echo "INTERNAL ERROR: Please define NDK_BUILDTOOLS_PATH to point to $$NDK/build/tools"
         exit 1
     fi
 fi
 
-# Warn if /bin/sh isn't bash.
+# Warn about /bin/sh ins't bash.
 if [ -z "$BASH_VERSION" ] ; then
     echo "WARNING: The shell running this script isn't bash.  Although we try to avoid bashism in scripts, things can happen."
 fi
@@ -60,7 +60,7 @@ extract_minor_version ()
 }
 
 # Compare two version numbers and only succeeds if the first one is
-# greater than or equal to the second one.
+# greather or equal than the second one.
 #
 # $1: first version (e.g. 4.9)
 # $2: second version (e.g. 4.8)
@@ -90,6 +90,13 @@ version_is_at_least ()
         return 0
     fi
 }
+
+# Binaries built by new linux host toolchain "prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.11-4.8"
+# may contain functions missing from server runs very old libc.so.  Define __USE_OLD_LINUX_HOST_GCC=yes
+# to use the original "prebuilts/tools/gcc-sdk" with glibc2.7 sysroot
+if [ -z "$__USE_OLD_LINUX_HOST_GCC" ]; then
+    __USE_OLD_LINUX_HOST_GCC=yes  # no
+fi
 
 #====================================================
 #
@@ -385,7 +392,7 @@ do_try64_option () { TRY64=yes; }
 
 register_try64_option ()
 {
-    register_option "--try-64" do_try64_option "Generate 64-bit only binaries."
+    register_option "--try-64" do_try64_option "Generate 64-bit binaries."
 }
 
 
@@ -553,9 +560,14 @@ do_option_help ()
 }
 
 VERBOSE=no
+VERBOSE2=no
 do_option_verbose ()
 {
-    VERBOSE=yes
+    if [ $VERBOSE = "yes" ] ; then
+        VERBOSE2=yes
+    else
+        VERBOSE=yes
+    fi
 }
 
 DRYRUN=no
@@ -615,7 +627,7 @@ fix_sysroot ()
     else
         SYSROOT_SUFFIX=$PLATFORM/arch-$ARCH
         SYSROOT=
-        check_sysroot $ANDROID_BUILD_TOP/prebuilts/ndk/current/platforms $SYSROOT_SUFFIX
+        check_sysroot $NDK_DIR/platforms $SYSROOT_SUFFIX
         check_sysroot $ANDROID_NDK_ROOT/platforms $SYSROOT_SUFFIX
         check_sysroot `dirname $ANDROID_NDK_ROOT`/development/ndk/platforms $SYSROOT_SUFFIX
 
@@ -695,12 +707,13 @@ handle_canadian_build ()
                 ;;
         esac
         if [ "$MINGW" = "yes" ] ; then
+            # NOTE: Use x86_64-pc-mingw32msvc or i586-pc-mingw32msvc because wrappers are generated
+            #       using these names
             if [ "$TRY64" = "yes" ]; then
-                ABI_CONFIGURE_HOST=x86_64-w64-mingw32
+                ABI_CONFIGURE_HOST=x86_64-pc-mingw32msvc
                 HOST_TAG=windows-x86_64
             else
-                # NOTE: A wrapper is generated for i686-w64-mingw32.
-                ABI_CONFIGURE_HOST=i686-w64-mingw32
+                ABI_CONFIGURE_HOST=i586-pc-mingw32msvc
                 HOST_TAG=windows
             fi
             HOST_OS=windows
@@ -724,30 +737,50 @@ handle_canadian_build ()
 #
 find_mingw_toolchain ()
 {
-    local LINUX_GCC_PREBUILTS=$ANDROID_BUILD_TOP/prebuilts/gcc/linux-x86
-    local MINGW_ROOT=$LINUX_GCC_PREBUILTS/host/x86_64-w64-mingw32-4.8/
-    BINPREFIX=x86_64-w64-mingw32-
-    MINGW_GCC=$MINGW_ROOT/bin/${BINPREFIX}gcc
-    if [ ! -e "$MINGW_GCC" ]; then
-        panic "$MINGW_GCC does not exist"
+    if [ "$DEBIAN_NAME" -a "$BINPREFIX" -a "$MINGW_GCC" ]; then
+        return
     fi
-
+    # IMPORTANT NOTE: binutils 2.21 requires a cross toolchain named
+    # i585-pc-mingw32msvc-gcc, or it will fail its configure step late
+    # in the toolchain build. Note that binutils 2.19 can build properly
+    # with i585-mingw32mvsc-gcc, which is the name used by the 'mingw32'
+    # toolchain install on Debian/Ubuntu.
+    #
+    # To solve this dilemma, we create a wrapper toolchain named
+    # i586-pc-mingw32msvc-gcc that really calls i586-mingw32msvc-gcc,
+    # this works with all versions of binutils.
+    #
+    # We apply the same logic to the 64-bit Windows cross-toolchain
+    #
+    # Fedora note: On Fedora it's x86_64-w64-mingw32- or i686-w64-mingw32-
+    # On older Fedora it's 32-bit only and called i686-pc-mingw32-
+    # so we just add more prefixes to the list to check.
     if [ "$HOST_ARCH" = "x86_64" -a "$TRY64" = "yes" ]; then
-        DEBIAN_NAME=mingw-w64
+        BINPREFIX=x86_64-pc-mingw32msvc-
+        BINPREFIXLST="x86_64-pc-mingw32msvc- x86_64-w64-mingw32- amd64-mingw32msvc-"
+        DEBIAN_NAME=mingw64
     else
         # we are trying 32 bit anyway, so forcing it to avoid build issues
         force_32bit_binaries
-        DEBIAN_NAME=mingw-w64
+        BINPREFIX=i586-pc-mingw32msvc-
+        BINPREFIXLST="i586-pc-mingw32msvc- i686-pc-mingw32- i586-mingw32msvc- i686-w64-mingw32-"
+        DEBIAN_NAME=mingw32
     fi
+
+    # Scan $BINPREFIXLST list to find installed mingw toolchain. It will be
+    # wrapped later with $BINPREFIX.
+    for i in $BINPREFIXLST; do
+        find_program MINGW_GCC ${i}gcc
+        if [ -n "$MINGW_GCC" ]; then
+            dump "Found mingw toolchain: $MINGW_GCC"
+            break
+        fi
+    done
 }
 
 # Check there is a working cross-toolchain installed.
 #
 # $1: install directory for mingw/darwin wrapper toolchain
-#
-# NOTE: Build scripts need to call this function to create MinGW wrappers,
-# even if they aren't doing a "Canadian" cross-compile with different build,
-# host, and target systems.
 #
 prepare_canadian_toolchain ()
 {
@@ -757,6 +790,13 @@ prepare_canadian_toolchain ()
     CROSS_GCC=
     if [ "$MINGW" = "yes" ]; then
         find_mingw_toolchain
+        if [ -z "$MINGW_GCC" ]; then
+            echo "ERROR: Could not find in your PATH any of:"
+            for i in $BINPREFIXLST; do echo "   ${i}gcc"; done
+            echo "Please install the corresponding cross-toolchain and re-run this script"
+            echo "TIP: On Debian or Ubuntu, try: sudo apt-get install $DEBIAN_NAME"
+            exit 1
+        fi
         CROSS_GCC=$MINGW_GCC
     else
         if [ -z "$DARWIN_TOOLCHAIN" ]; then
@@ -803,31 +843,43 @@ EOF
     fi
 
     DST_PREFIX=${CROSS_GCC%gcc}
+    if [ "$NDK_CCACHE" ]; then
+        DST_PREFIX="$NDK_CCACHE $DST_PREFIX"
+    fi
     $NDK_BUILDTOOLS_PATH/gen-toolchain-wrapper.sh --src-prefix=$BINPREFIX --dst-prefix="$DST_PREFIX" "$CROSS_WRAP_DIR" \
         --cflags="$HOST_CFLAGS" --cxxflags="$HOST_CFLAGS" --ldflags="$HOST_LDFLAGS"
     # generate wrappers for BUILD toolchain
     # this is required for mingw/darwin build to avoid tools canadian cross configuration issues
     # 32-bit BUILD toolchain
-    LEGACY_TOOLCHAIN_DIR="$ANDROID_BUILD_TOP/prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.15-4.8"
-    $NDK_BUILDTOOLS_PATH/gen-toolchain-wrapper.sh --src-prefix=i386-linux-gnu- \
-            --cflags="-m32" --cxxflags="-m32" --ldflags="-m elf_i386" --asflags="--32" \
-            --dst-prefix="$LEGACY_TOOLCHAIN_DIR/bin/x86_64-linux-" "$CROSS_WRAP_DIR"
-    $NDK_BUILDTOOLS_PATH/gen-toolchain-wrapper.sh --src-prefix=i386-pc-linux-gnu- \
-            --cflags="-m32" --cxxflags="-m32" --ldflags="-m elf_i386" --asflags="--32" \
-            --dst-prefix="$LEGACY_TOOLCHAIN_DIR/bin/x86_64-linux-" "$CROSS_WRAP_DIR"
-    # 64-bit BUILD toolchain.  libbfd is still built in 32-bit.
-    $NDK_BUILDTOOLS_PATH/gen-toolchain-wrapper.sh --src-prefix=x86_64-linux-gnu- \
-            --dst-prefix="$LEGACY_TOOLCHAIN_DIR/bin/x86_64-linux-" "$CROSS_WRAP_DIR"
-    $NDK_BUILDTOOLS_PATH/gen-toolchain-wrapper.sh --src-prefix=x86_64-pc-linux-gnu- \
-            --dst-prefix="$LEGACY_TOOLCHAIN_DIR/bin/x86_64-linux-" "$CROSS_WRAP_DIR"
-    fail_panic "Could not create $DEBIAN_NAME wrapper toolchain in $CROSS_WRAP_DIR"
-
-    # 32-bit Windows toolchain (i686-w64-mingw32 -> x86_64-w64-mingw32 -m32)
-    local MINGW_TOOLCHAIN_DIR="$ANDROID_BUILD_TOP/prebuilts/gcc/linux-x86/host/x86_64-w64-mingw32-4.8"
-    $NDK_BUILDTOOLS_PATH/gen-toolchain-wrapper.sh --src-prefix=i686-w64-mingw32- \
-            --cflags="-m32" --cxxflags="-m32" --ldflags="-m i386pe" --asflags="--32" \
-            --windres-flags="-F pe-i386" \
-            --dst-prefix="$MINGW_TOOLCHAIN_DIR/bin/x86_64-w64-mingw32-" "$CROSS_WRAP_DIR"
+    if [ "$__USE_OLD_LINUX_HOST_GCC" = "yes" ]; then
+        LEGACY_TOOLCHAIN_DIR="$ANDROID_NDK_ROOT/../prebuilts/gcc/linux-x86/host/i686-linux-glibc2.7-4.6"
+        $NDK_BUILDTOOLS_PATH/gen-toolchain-wrapper.sh --src-prefix=i386-linux-gnu- \
+                --dst-prefix="$LEGACY_TOOLCHAIN_DIR/bin/i686-linux-" "$CROSS_WRAP_DIR"
+        $NDK_BUILDTOOLS_PATH/gen-toolchain-wrapper.sh --src-prefix=i386-pc-linux-gnu- \
+                --dst-prefix="$LEGACY_TOOLCHAIN_DIR/bin/i686-linux-" "$CROSS_WRAP_DIR"
+        # 64-bit BUILD toolchain.  libbfd is still built in 32-bit.  Use gcc-sdk instead
+        # of x86_64-linux-glibc2.7-4.6 which is a 64-bit-only tool
+        LEGACY_TOOLCHAIN_DIR="$ANDROID_NDK_ROOT/../prebuilts/tools/gcc-sdk"
+        $NDK_BUILDTOOLS_PATH/gen-toolchain-wrapper.sh --src-prefix=x86_64-linux-gnu- \
+                --dst-prefix="$LEGACY_TOOLCHAIN_DIR/" "$CROSS_WRAP_DIR"
+        $NDK_BUILDTOOLS_PATH/gen-toolchain-wrapper.sh --src-prefix=x86_64-pc-linux-gnu- \
+                --dst-prefix="$LEGACY_TOOLCHAIN_DIR/" "$CROSS_WRAP_DIR"
+        fail_panic "Could not create $DEBIAN_NAME wrapper toolchain in $CROSS_WRAP_DIR"
+    else
+        LEGACY_TOOLCHAIN_DIR="$ANDROID_NDK_ROOT/../prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.11-4.8"
+        $NDK_BUILDTOOLS_PATH/gen-toolchain-wrapper.sh --src-prefix=i386-linux-gnu- \
+                --cflags="-m32" --cxxflags="-m32" --ldflags="-m elf_i386" --asflags="--32" \
+                --dst-prefix="$LEGACY_TOOLCHAIN_DIR/bin/x86_64-linux-" "$CROSS_WRAP_DIR"
+        $NDK_BUILDTOOLS_PATH/gen-toolchain-wrapper.sh --src-prefix=i386-pc-linux-gnu- \
+                --cflags="-m32" --cxxflags="-m32" --ldflags="-m elf_i386" --asflags="--32" \
+                --dst-prefix="$LEGACY_TOOLCHAIN_DIR/bin/x86_64-linux-" "$CROSS_WRAP_DIR"
+        # 64-bit BUILD toolchain.  libbfd is still built in 32-bit.
+        $NDK_BUILDTOOLS_PATH/gen-toolchain-wrapper.sh --src-prefix=x86_64-linux-gnu- \
+                --dst-prefix="$LEGACY_TOOLCHAIN_DIR/bin/x86_64-linux-" "$CROSS_WRAP_DIR"
+        $NDK_BUILDTOOLS_PATH/gen-toolchain-wrapper.sh --src-prefix=x86_64-pc-linux-gnu- \
+                --dst-prefix="$LEGACY_TOOLCHAIN_DIR/bin/x86_64-linux-" "$CROSS_WRAP_DIR"
+        fail_panic "Could not create $DEBIAN_NAME wrapper toolchain in $CROSS_WRAP_DIR"
+    fi
 
     export PATH=$CROSS_WRAP_DIR:$PATH
     dump "Using $DEBIAN_NAME wrapper: $CROSS_WRAP_DIR/${BINPREFIX}gcc"
@@ -840,6 +892,29 @@ handle_host ()
         HOST_BITS=32
     fi
     handle_canadian_build
+}
+
+setup_ccache ()
+{
+    # Support for ccache compilation
+    # We can't use this here when building Windows/darwin binaries on Linux with
+    # binutils 2.21, because defining CC/CXX in the environment makes the
+    # configure script fail later
+    #
+    if [ "$NDK_CCACHE" -a "$MINGW" != "yes" -a "$DARWIN" != "yes" ]; then
+        NDK_CCACHE_CC=$CC
+        NDK_CCACHE_CXX=$CXX
+        # Unfortunately, we can just do CC="$NDK_CCACHE $CC" because some
+        # configure scripts are not capable of dealing with this properly
+        # E.g. the ones used to rebuild the GCC toolchain from scratch.
+        # So instead, use a wrapper script
+        CC=$NDK_BUILDTOOLS_ABSPATH/ndk-ccache-gcc.sh
+        CXX=$NDK_BUILDTOOLS_ABSPATH/ndk-ccache-g++.sh
+        export NDK_CCACHE_CC NDK_CCACHE_CXX
+        log "Using ccache compilation"
+        log "NDK_CCACHE_CC=$NDK_CCACHE_CC"
+        log "NDK_CCACHE_CXX=$NDK_CCACHE_CXX"
+    fi
 }
 
 prepare_common_build ()
@@ -871,17 +946,21 @@ prepare_common_build ()
     if [ -z "$CC" ]; then
         LEGACY_TOOLCHAIN_DIR=
         if [ "$HOST_OS" = "linux" ]; then
-            LEGACY_TOOLCHAIN_DIR="$ANDROID_BUILD_TOP/prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.15-4.8/bin"
-            LEGACY_TOOLCHAIN_PREFIX="$LEGACY_TOOLCHAIN_DIR/x86_64-linux-"
+            if [ "$__USE_OLD_LINUX_HOST_GCC" = "yes" ]; then
+                LEGACY_TOOLCHAIN_DIR="$ANDROID_NDK_ROOT/../prebuilts/tools/gcc-sdk"
+                LEGACY_TOOLCHAIN_PREFIX="$LEGACY_TOOLCHAIN_DIR/"
+            else
+                LEGACY_TOOLCHAIN_DIR="$ANDROID_NDK_ROOT/../prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.11-4.8/bin"
+                LEGACY_TOOLCHAIN_PREFIX="$LEGACY_TOOLCHAIN_DIR/x86_64-linux-"
+            fi
         elif [ "$HOST_OS" = "darwin" ]; then
-            LEGACY_TOOLCHAIN_DIR="$ANDROID_BUILD_TOP/prebuilts/gcc/darwin-x86/host/i686-apple-darwin-4.2.1/bin"
+            LEGACY_TOOLCHAIN_DIR="$ANDROID_NDK_ROOT/../prebuilts/gcc/darwin-x86/host/i686-apple-darwin-4.2.1/bin"
             LEGACY_TOOLCHAIN_PREFIX="$LEGACY_TOOLCHAIN_DIR/i686-apple-darwin10-"
         fi
-        log "Forcing generation of $HOST_OS binaries with legacy toolchain"
-        CC="${LEGACY_TOOLCHAIN_PREFIX}gcc"
-        CXX="${LEGACY_TOOLCHAIN_PREFIX}g++"
-        if [ ! -e "${CC}" ]; then
-            panic "${CC} does not exist."
+        if [ -d "$LEGACY_TOOLCHAIN_DIR" ] ; then
+            log "Forcing generation of $HOST_OS binaries with legacy toolchain"
+            CC="${LEGACY_TOOLCHAIN_PREFIX}gcc"
+            CXX="${LEGACY_TOOLCHAIN_PREFIX}g++"
         fi
     fi
 
@@ -910,8 +989,8 @@ prepare_common_build ()
     int test_array[1-2*(sizeof(void*) != 4)];
 EOF
     log_n "Checking whether the compiler generates 32-bit binaries..."
-    log $CC $HOST_CFLAGS -c -o $TMPO $TMPC
-    $CC $HOST_CFLAGS -c -o $TMPO $TMPC >$TMPL 2>&1
+    log2 $CC $HOST_CFLAGS -c -o $TMPO $TMPC
+    $NDK_CCACHE $CC $HOST_CFLAGS -c -o $TMPO $TMPC >$TMPL 2>&1
     if [ $? != 0 ] ; then
         log "no"
         if [ "$TRY64" != "yes" ]; then
@@ -954,6 +1033,8 @@ prepare_host_build ()
         STRIP=$ABI_CONFIGURE_HOST-strip
         export CC CXX CPP LD AR AS RANLIB STRIP
     fi
+
+    setup_ccache
 }
 
 prepare_abi_configure_build ()
@@ -1003,6 +1084,8 @@ prepare_target_build ()
             HOST_GMP_ABI=
         fi
     fi
+
+    setup_ccache
 }
 
 # $1: Toolchain name
@@ -1037,10 +1120,6 @@ parse_toolchain_name ()
         ARCH="arm64"
         ABI="arm64-v8a"
         ABI_CONFIGURE_TARGET="aarch64-linux-android"
-        # Reserve the platform register, x18. This should happen automatically
-        # with clang but we need to pass it manually when compiling with gcc.
-        ABI_CFLAGS_FOR_TARGET="-ffixed-x18"
-        ABI_CXXFLAGS_FOR_TARGET="-ffixed-x18"
         ;;
     x86-*)
         ARCH="x86"
@@ -1102,6 +1181,44 @@ parse_toolchain_name ()
 
     GCC_VERSION=`expr -- "$TOOLCHAIN" : '.*-\([0-9x\.]*\)'`
     log "Using GCC version: $GCC_VERSION"
+
+    # Determine --host value when building gdbserver
+
+    case "$TOOLCHAIN" in
+    arm-*)
+        GDBSERVER_HOST=arm-eabi-linux
+        GDBSERVER_CFLAGS="-fno-short-enums"
+        GDBSERVER_LDFLAGS=
+        ;;
+    aarch64-*)
+        GDBSERVER_HOST=aarch64-eabi-linux
+        GDBSERVER_CFLAGS="-fno-short-enums -DUAPI_HEADERS"
+        GDBSERVER_LDFLAGS=
+        ;;
+    x86-*)
+        GDBSERVER_HOST=i686-linux-android
+        GDBSERVER_CFLAGS=
+        GDBSERVER_LDFLAGS=
+        ;;
+    x86_64-*)
+        GDBSERVER_HOST=x86_64-linux-android
+        GDBSERVER_CFLAGS=-DUAPI_HEADERS
+        GDBSERVER_LDFLAGS=
+        ;;
+    mipsel-*)
+        GDBSERVER_HOST=mipsel-linux-android
+        GDBSERVER_CFLAGS=
+        GDBSERVER_LDFLAGS=
+        ;;
+    mips64el-*)
+        GDBSERVER_HOST=mips64el-linux-android
+        GDBSERVER_CFLAGS=-DUAPI_HEADERS
+        GDBSERVER_LDFLAGS=
+        ;;
+    *)
+        echo "Unknown TOOLCHAIN=$TOOLCHAIN"
+        exit
+    esac
 }
 
 # Return the host "tag" used to identify prebuilt host binaries.
@@ -1121,11 +1238,15 @@ get_prebuilt_host_tag ()
         RET=darwin-x86_64  # let the following handles 32-bit case
     fi
     case $RET in
-        linux-*)
-            RET=linux-x86_64
+        linux-x86_64)
+            if [ "$TRY64" = "no" ]; then
+                RET=linux-x86
+            fi
             ;;
-        darwin-*)
-            RET=darwin-x86_64
+        darwin-x86_64)
+            if [ "$TRY64" = "no" ]; then
+                RET=darwin-x86
+            fi
             ;;
     esac
     echo $RET
@@ -1141,13 +1262,81 @@ get_prebuilt_host_exe_ext ()
     fi
 }
 
+# Find all archs from $DEV_DIR/platforms or $NDK_DIR/platforms
+# Return: the list of found arch name
+find_ndk_archs ()
+{
+    local NDK_ROOT_DIR DEVDIR
+    local RESULT FOUND_ARCHS
+
+    if [ ! -z "$NDK_DIR" ]; then
+        NDK_ROOT_DIR=$NDK_DIR
+    else
+        NDK_ROOT_DIR=$ANDROID_NDK_ROOT
+    fi
+
+    DEVDIR="$ANDROID_NDK_ROOT/../development/ndk"
+
+    # Check development directory first
+    if [ -d $DEVDIR/platforms ]; then
+        RESULT=$(ls $DEVDIR/platforms/android-* | grep "arch-")
+        for arch in $RESULT; do
+            arch=$(basename $arch | sed -e 's/^arch-//')
+            FOUND_ARCHS="$FOUND_ARCHS $arch"
+        done
+    fi
+
+    # Check ndk directory
+    if [ -z "$FOUND_ARCHS" ] && [ -d $NDK_ROOT_DIR/platforms ]; then
+        RESULT=$(ls $NDK_ROOT_DIR/platforms/android-* | grep "arch-")
+        for arch in $RESULT; do
+            arch=$(basename $arch | sed -e 's/^arch-//')
+            FOUND_ARCHS="$FOUND_ARCHS $arch"
+        done
+    fi
+
+    # If we cannot find any arch, set to default archs
+    if [ -z "$FOUND_ARCHS" ]; then
+        FOUND_ARCHS=$DEFAULT_ARCHS
+    fi
+
+    echo "$(sort_uniq $FOUND_ARCHS)"
+}
+
+# Find unknown archs from $NDK_DIR/platforms
+# Return: arch names not in ndk default archs
+find_ndk_unknown_archs()
+{
+    local FOUND_ARCHS=$(find_ndk_archs)
+    # TODO: arm64, x86_64 is here just to be found as known arch.
+    # It can be removed as soon as it is added into $DEFAULT_ARCHS
+    echo "$(filter_out "$DEFAULT_ARCHS arm64 x86_64 mips64" "$FOUND_ARCHS")"
+}
+
+# Determine whether given arch is in unknown archs list
+# $1: arch
+# Return: yes or no
+arch_in_unknown_archs()
+{
+    local UNKNOWN_ARCH=$(find_ndk_unknown_archs | grep $1)
+    if [ -z "$UNKNOWN_ARCH" ]; then
+        echo "no"
+    else
+        echo "yes"
+    fi
+}
+
 # Get library suffix for given ABI
 # $1: ABI
 # Return: .so or .bc
 get_lib_suffix_for_abi ()
 {
     local ABI=$1
-    echo ".so"
+    if [ $(arch_in_unknown_archs $ABI) = "yes" ]; then
+       echo ".bc"
+    else
+       echo ".so"
+    fi
 }
 
 # Convert an ABI name into an Architecture name
@@ -1158,7 +1347,7 @@ convert_abi_to_arch ()
     local RET
     local ABI=$1
     case $ABI in
-        armeabi|armeabi-v7a)
+        armeabi|armeabi-v7a|armeabi-v7a-hard)
             RET=arm
             ;;
         x86|mips|x86_64|mips64)
@@ -1171,8 +1360,12 @@ convert_abi_to_arch ()
             RET=arm64
             ;;
         *)
-            >&2 echo "ERROR: Unsupported ABI name: $ABI, use one of: armeabi, armeabi-v7a, x86, mips, arm64-v8a, x86_64 or mips64"
-            exit 1
+            if [ "$(arch_in_unknown_archs $ABI)" = "yes" ]; then
+                RET=$ABI
+            else
+                >&2 echo "ERROR: Unsupported ABI name: $ABI, use one of: armeabi, armeabi-v7a, x86, mips, armeabi-v7a-hard, arm64-v8a, x86_64 or mips64"
+                exit 1
+            fi
             ;;
     esac
     echo "$RET"
@@ -1188,7 +1381,7 @@ convert_arch_to_abi ()
     local ARCH=$1
     case $ARCH in
         arm)
-            RET=armeabi,armeabi-v7a
+            RET=armeabi,armeabi-v7a,armeabi-v7a-hard
             ;;
         x86|x86_64|mips|mips64)
             RET=$ARCH
@@ -1197,8 +1390,12 @@ convert_arch_to_abi ()
             RET=arm64-v8a
             ;;
         *)
-            >&2 echo "ERROR: Unsupported ARCH name: $ARCH, use one of: arm, x86, mips"
-            exit 1
+            if [ "$(arch_in_unknown_archs $ARCH)" = "yes" ]; then
+                RET=$ARCH
+            else
+                >&2 echo "ERROR: Unsupported ARCH name: $ARCH, use one of: arm, x86, mips"
+                exit 1
+            fi
             ;;
     esac
     echo "$RET"
@@ -1226,7 +1423,7 @@ convert_archs_to_abis ()
 }
 
 # Return the default toolchain binary path prefix for given architecture and gcc version
-# For example: arm 4.8 -> toolchains/<system>/arm-linux-androideabi-4.8/bin/arm-linux-androideabi-
+# For example: arm 4.8 -> toolchains/arm-linux-androideabi-4.8/prebuilt/<system>/bin/arm-linux-androideabi-
 # $1: Architecture name
 # $2: GCC version
 # $3: optional, system name, defaults to $HOST_TAG
@@ -1242,15 +1439,26 @@ get_toolchain_binprefix_for_arch ()
 }
 
 # Return llvm toolchain binary path prefix for given llvm version
-# $1: optional, system name, defaults to $HOST_TAG
+# $1: llvm version
+# $2: optional, system name, defaults to $HOST_TAG
 get_llvm_toolchain_binprefix ()
 {
     local NAME DIR BINPREFIX
-    local SYSTEM=${1:-$(get_prebuilt_host_tag)}
-    local VERSION=r365631c2
-    SYSTEM=${SYSTEM%_64} # Trim _64 suffix. We only have one LLVM.
-    BINPREFIX=$ANDROID_BUILD_TOP/prebuilts/clang/host/$SYSTEM/clang-$VERSION/bin
+    local SYSTEM=${2:-$(get_prebuilt_host_tag)}
+    NAME=llvm-$1
+    DIR=$(get_toolchain_install . $NAME $SYSTEM)
+    BINPREFIX=${DIR#./}/bin/
     echo "$BINPREFIX"
+}
+
+# Return the default toochain binary path prefix for a given architecture
+# For example: arm -> toolchains/arm-linux-androideabi-4.8/prebuilt/<system>/bin/arm-linux-androideabi-
+# $1: Architecture name
+# $2: optional, system name, defaults to $HOST_TAG
+get_default_toolchain_binprefix_for_arch ()
+{
+    local GCCVER=$(get_default_gcc_version_for_arch $ARCH)
+    get_toolchain_binprefix_for_arch $1 $GCCVER $2
 }
 
 # Return default API level for a given arch
@@ -1259,12 +1467,17 @@ get_llvm_toolchain_binprefix ()
 # $1: Architecture name
 get_default_api_level_for_arch ()
 {
-    # For now, always build the toolchain against API level 14 for 32-bit arch
-    # and API level $FIRST_API64_LEVEL for 64-bit arch
-    case $1 in
-        *64) echo $FIRST_API64_LEVEL ;;
-        *) echo 14 ;;
-    esac
+    # For unknown arch, use API level $FIRST_API64_LEVEL
+    if [ $(arch_in_unknown_archs $1) = "yes" ]; then
+        echo $FIRST_API64_LEVEL
+    else
+        # For now, always build the toolchain against API level 9 for 32-bit arch
+        # and API level $FIRST_API64_LEVEL for 64-bit arch
+        case $1 in
+            *64) echo $FIRST_API64_LEVEL ;;
+            *) echo 9 ;;
+        esac
+    fi
 }
 
 # Return the default platform sysroot corresponding to a given architecture
@@ -1335,27 +1548,32 @@ get_toolchain_install ()
 get_toolchain_install_subdir ()
 {
     local SYSTEM=${2:-$(get_prebuilt_host_tag)}
-    echo "toolchains/$SYSTEM/$1"
+    echo "toolchains/$1/prebuilt/$SYSTEM"
 }
 
 # Return the relative install prefix for prebuilt host
 # executables (relative to the NDK top directory).
+# NOTE: This deals with MINGW==yes or DARWIN==yes appropriately
 #
+# $1: optional, system name
 # Out: relative path to prebuilt install prefix
 get_prebuilt_install_prefix ()
 {
-    echo "host-tools"
+    local TAG=${1:-$(get_prebuilt_host_tag)}
+    echo "prebuilt/$TAG"
 }
 
 # Return the relative path of an installed prebuilt host
-# executable.
+# executable
+# NOTE: This deals with MINGW==yes or DARWIN==yes appropriately.
 #
 # $1: executable name
+# $2: optional, host system name
 # Out: path to prebuilt host executable, relative
 get_prebuilt_host_exec ()
 {
     local PREFIX EXE
-    PREFIX=$(get_prebuilt_install_prefix)
+    PREFIX=$(get_prebuilt_install_prefix $2)
     EXE=$(get_prebuilt_host_exe_ext)
     echo "$PREFIX/bin/$1$EXE"
 }
@@ -1425,27 +1643,28 @@ check_toolchain_src_dir ()
         echo "ERROR: Either the file $SRC_DIR/build/configure or"
         echo "       the directory $SRC_DIR/gcc does not exist."
         echo "This is not the top of a toolchain tree: $SRC_DIR"
+        echo "You must give the path to a copy of the toolchain source directories"
+        echo "created by 'download-toolchain-sources.sh."
         exit 1
     fi
 }
 
-make_repo_prop () {
-    local OUT_PATH="$1/repo.prop"
-
-    # The build server generates a repo.prop file that contains the current SHAs
-    # of each project.
-    if [ -f $DIST_DIR/repo.prop ]; then
-        cp $DIST_DIR/repo.prop $OUT_PATH
-    else
-        # Generate our own if we're building locally.
-        pushd $ANDROID_NDK_ROOT
-        repo forall \
-            -c 'echo $REPO_PROJECT $(git rev-parse HEAD)' > $OUT_PATH
-        popd
-    fi
-}
-
 #
+# The NDK_TMPDIR variable is used to specify a root temporary directory
+# when invoking toolchain build scripts. If it is not defined, we will
+# create one here, and export the value to ensure that any scripts we
+# call after that use the same one.
+#
+if [ -z "$NDK_TMPDIR" ]; then
+    NDK_TMPDIR=/tmp/ndk-$USER/tmp/build-$$
+    mkdir -p $NDK_TMPDIR
+    if [ $? != 0 ]; then
+        echo "ERROR: Could not create NDK_TMPDIR: $NDK_TMPDIR"
+        exit 1
+    fi
+    export NDK_TMPDIR
+fi
+
 # Define HOST_TAG32, as the 32-bit version of HOST_TAG
 # We do this by replacing an -x86_64 suffix by -x86
 HOST_TAG32=$HOST_TAG

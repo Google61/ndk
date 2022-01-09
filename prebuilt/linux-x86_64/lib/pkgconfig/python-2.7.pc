@@ -1,4 +1,4 @@
-prefix=/buildbot/src/android/ndk-release-r21/out/linux/python/linux-x86_64/install/host-tools
+prefix=/tmp/ndk-andrewhsieh/buildhost/install/prebuilt/linux-x86_64
 exec_prefix=${prefix}
 libdir=${exec_prefix}/lib
 includedir=${prefix}/include

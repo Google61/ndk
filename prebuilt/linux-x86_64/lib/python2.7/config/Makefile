@@ -26,11 +26,11 @@ MODLIBS=        $(LOCALMODLIBS) $(BASEMODLIBS)
 
 # === Variables set by configure
 VERSION=	2.7
-srcdir=		/buildbot/src/android/ndk-release-r21/toolchain/python/Python-2.7.5
-VPATH=		/buildbot/src/android/ndk-release-r21/toolchain/python/Python-2.7.5
-MSYSVPATH=	/buildbot/src/android/ndk-release-r21/toolchain/python/Python-2.7.5
-abs_srcdir=	/buildbot/src/android/ndk-release-r21/toolchain/python/Python-2.7.5
-abs_builddir=	/buildbot/src/android/ndk-release-r21/out/linux/python/build-python-linux-x86_64-2.7.5
+srcdir=		/s/ndk-toolchain/src/python/Python-2.7.5
+VPATH=		/s/ndk-toolchain/src/python/Python-2.7.5
+MSYSVPATH=	/s/ndk-toolchain/src/python/Python-2.7.5
+abs_srcdir=	/s/ndk-toolchain/src/python/Python-2.7.5
+abs_builddir=	/tmp/ndk-andrewhsieh/buildhost/build-python-linux-x86_64-2.7.5
 build=		x86_64-pc-linux-gnu
 host=		x86_64-pc-linux-gnu
 
@@ -40,10 +40,10 @@ MAINCC=		$(CC)
 LINKCC=		$(PURIFY) $(MAINCC)
 AR=		x86_64-linux-gnu-ar
 RANLIB=		x86_64-linux-gnu-ranlib
-SVNVERSION=	echo Unversioned directory
-HGVERSION=	
-HGTAG=		
-HGBRANCH=	
+SVNVERSION=	svnversion $(srcdir)
+HGVERSION=	hg id -i $(srcdir)
+HGTAG=		hg id -t $(srcdir)
+HGBRANCH=	hg id -b $(srcdir)
 
 GNULD=          yes
 
@@ -92,10 +92,10 @@ DELIM=		:
 MACHDEP=	linux2
 
 # Multiarch directory (may be empty)
-MULTIARCH=	x86_64-linux-gnu
+MULTIARCH=	
 
 # Install prefix for architecture-independent files
-prefix=		/buildbot/src/android/ndk-release-r21/out/linux/python/linux-x86_64/install/host-tools
+prefix=		/tmp/ndk-andrewhsieh/buildhost/install/prebuilt/linux-x86_64
 
 # Install prefix for architecture-dependent files
 exec_prefix=	${prefix}
@@ -154,7 +154,7 @@ EXEMODE=	755
 FILEMODE=	644
 
 # configure script arguments
-CONFIG_ARGS=	 '--prefix=/buildbot/src/android/ndk-release-r21/out/linux/python/linux-x86_64/install/host-tools' '--build=x86_64-linux-gnu' '--host=x86_64-linux-gnu' '--with-build-sysroot' '--disable-ipv6' 'build_alias=x86_64-linux-gnu' 'host_alias=x86_64-linux-gnu' 'CC=x86_64-linux-gnu-gcc' 'CFLAGS=-O2 -Os -fomit-frame-pointer -s' 'LDFLAGS='
+CONFIG_ARGS=	 '--prefix=/tmp/ndk-andrewhsieh/buildhost/install/prebuilt/linux-x86_64' '--build=x86_64-linux-gnu' '--host=x86_64-linux-gnu' '--with-build-sysroot' '--disable-ipv6' 'build_alias=x86_64-linux-gnu' 'host_alias=x86_64-linux-gnu' 'CC=x86_64-linux-gnu-gcc' 'CFLAGS=-O2 -Os -fomit-frame-pointer -s' 'LDFLAGS='
 
 
 # Subdirectories with code
@@ -541,7 +541,7 @@ $(PYTHONFRAMEWORKDIR)/Versions/$(VERSION)/$(PYTHONFRAMEWORK): \
 # for a shared core library; otherwise, this rule is a noop.
 $(DLLLIBRARY) libpython$(VERSION).dll.a: $(LIBRARY_OBJS)
 	if test -n "$(DLLLIBRARY)"; then \
-		$(LDSHARED) -Wl,--out-implib=$@ -o $(DLLLIBRARY) -static-libgcc $^ \
+		$(LDSHARED) -Wl,--out-implib=$@ -o $(DLLLIBRARY) $^ \
 			$(LIBS) $(MODLIBS) $(SYSLIBS) $(LDLAST); \
 	else true; \
 	fi

@@ -26,30 +26,27 @@ endif
 
 TARGET_OUT := $(NDK_APP_OUT)/$(_app)/$(TARGET_ARCH_ABI)
 
-TARGET_PLATFORM_LEVEL := $(APP_PLATFORM_LEVEL)
-
-# 64-bit ABIs were first supported in API 21. Pull up these ABIs if the app has
-# a lower minSdkVersion.
-ifneq ($(filter $(NDK_KNOWN_DEVICE_ABI64S),$(TARGET_ARCH_ABI)),)
-    ifneq ($(call lt,$(TARGET_PLATFORM_LEVEL),21),)
-        TARGET_PLATFORM_LEVEL := 21
-    endif
+# For x86 and mips: the minimal platform level is android-9
+TARGET_PLATFORM_SAVED := $(TARGET_PLATFORM)
+ifneq ($(filter %x86 %mips,$(TARGET_ARCH_ABI)),)
+$(foreach _plat,3 4 5 8,\
+    $(eval TARGET_PLATFORM := $$(subst android-$(_plat),android-9,$$(TARGET_PLATFORM)))\
+)
 endif
 
-# Not used by ndk-build, but are documented for use by Android.mk files.
-TARGET_PLATFORM := android-$(TARGET_PLATFORM_LEVEL)
-TARGET_ABI := $(TARGET_PLATFORM)-$(TARGET_ARCH_ABI)
+# For 64-bit ABIs: the minimal platform level is android-21
+ifneq ($(filter $(NDK_KNOWN_DEVICE_ABI64S),$(TARGET_ARCH_ABI)),)
+$(foreach _plat,3 4 5 8 9 10 11 12 13 14 15 16 17 18 19 20,\
+    $(eval TARGET_PLATFORM := $$(subst android-$(_plat),android-21,$$(TARGET_PLATFORM)))\
+)
+endif
 
-# If we're targeting a new enough platform version, we don't actually need to
-# cover any gaps in libc for libc++ support. In those cases, save size in the
-# APK by avoiding libandroid_support.
-#
-# This is also a requirement for static executables, since using
-# libandroid_support with a modern libc.a will result in multiple symbol
-# definition errors.
-NDK_PLATFORM_NEEDS_ANDROID_SUPPORT := true
-ifeq ($(call gte,$(TARGET_PLATFORM_LEVEL),21),$(true))
-    NDK_PLATFORM_NEEDS_ANDROID_SUPPORT := false
+TARGET_PLATFORM_LEVEL := $(strip $(subst android-,,$(TARGET_PLATFORM)))
+ifneq (,$(call gte,$(TARGET_PLATFORM_LEVEL),$(NDK_FIRST_PIE_PLATFORM_LEVEL)))
+    TARGET_PIE := true
+    $(call ndk_log,  Enabling -fPIE for TARGET_PLATFORM $(TARGET_PLATFORM))
+else
+    TARGET_PIE := false
 endif
 
 # Separate the debug and release objects. This prevents rebuilding
@@ -64,14 +61,11 @@ endif
 TARGET_GDB_SETUP := $(TARGET_OUT)/setup.gdb
 
 # RS triple
-ifeq ($(TARGET_ARCH_ABI),armeabi-v7a)
+ifneq ($(filter $(TARGET_ARCH_ABI), armeabi-v7a armeabi-v7a-hard),)
   RS_TRIPLE := armv7-none-linux-gnueabi
 endif
 ifeq ($(TARGET_ARCH_ABI),armeabi)
   RS_TRIPLE := arm-none-linux-gnueabi
-endif
-ifeq ($(TARGET_ARCH_ABI),arm64-v8a)
-  RS_TRIPLE := aarch64-linux-android
 endif
 ifeq ($(TARGET_ARCH_ABI),mips)
   RS_TRIPLE := mipsel-unknown-linux
@@ -79,8 +73,9 @@ endif
 ifeq ($(TARGET_ARCH_ABI),x86)
   RS_TRIPLE := i686-unknown-linux
 endif
-ifeq ($(TARGET_ARCH_ABI),x86_64)
-  RS_TRIPLE := x86_64-unknown-linux
-endif
+
 
 include $(BUILD_SYSTEM)/setup-toolchain.mk
+
+# Restore TARGET_PLATFORM, see above.
+TARGET_PLATFORM := $(TARGET_PLATFORM_SAVED)

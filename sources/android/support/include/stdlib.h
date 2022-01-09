@@ -25,27 +25,35 @@
  * OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
-
 #ifndef NDK_ANDROID_SUPPORT_STDLIB_H
 #define NDK_ANDROID_SUPPORT_STDLIB_H
 
+// __LP64__
+
 #include_next <stdlib.h>
 
-__BEGIN_DECLS
+#if !defined(__LP64__)
 
-#if __ANDROID_API__ < __ANDROID_API_J_MR1__
-int posix_memalign(void** memptr, size_t alignment, size_t size);
+#include <xlocale.h>
+
+#ifdef __cplusplus
+extern "C" {
 #endif
 
-#if __ANDROID_API__ < __ANDROID_API_L__
-long double strtold_l(const char*, char**, locale_t);
-long long strtoll_l(const char*, char**, int, locale_t);
-unsigned long long strtoull_l(const char*, char**, int, locale_t);
-int mbtowc(wchar_t*, const char*, size_t);
-int at_quick_exit(void (*)(void));
-void quick_exit(int) __noreturn;
+long long   strtoll(const char*, char**, int);
+long double strtold(const char*, char**);
+void _Exit(int);
+int                  mbtowc(wchar_t *pwc, const char *pmb, size_t max);
+long                 strtol_l(const char *nptr, char **endptr, int base, locale_t loc);
+unsigned long        strtoul_l(const char *nptr, char **endptr, int base, locale_t loc);
+long long            strtoll_l(const char *nptr, char **endptr, int base, locale_t loc);
+unsigned long long   strtoull_l(const char *nptr, char **endptr, int base, locale_t loc);
+long double          strtold_l(const char *nptr, char **endptr, locale_t loc);
+
+#ifdef __cplusplus
+}  // extern "C"
 #endif
 
-__END_DECLS
+#endif // !__LP64__
 
-#endif
+#endif  // NDK_ANDROID_SUPPORT_STDLIB_H

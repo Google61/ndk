@@ -77,7 +77,6 @@ bh_tag_to_os ()
         linux-*) RET="linux";;
         darwin-*) RET="darwin";;
         windows|windows-*) RET="windows";;
-        *) echo "ERROR: Unknown tag $1" >&2; echo "INVALID"; exit 1;;
     esac
     echo $RET
 }
@@ -90,12 +89,9 @@ bh_tag_to_arch ()
     local RET
     case $1 in
         *-arm) RET=arm;;
-        *-arm64) RET=arm64;;
         *-mips) RET=mips;;
-        *-mips64) RET=mips64;;
         windows|*-x86) RET=x86;;
         *-x86_64) RET=x86_64;;
-        *) echo "ERROR: Unknown tag $1" >&2; echo "INVALID"; exit 1;;
     esac
     echo $RET
 }
@@ -108,8 +104,7 @@ bh_tag_to_bits ()
     local RET
     case $1 in
         windows|*-x86|*-arm|*-mips) RET=32;;
-        *-x86_64|*-arm64|*-mips64) RET=64;;
-        *) echo "ERROR: Unknown tag $1" >&2; echo "INVALID"; exit 1;;
+        *-x86_64) RET=64;;
     esac
     echo $RET
 }
@@ -125,15 +120,11 @@ bh_tag_to_config_triplet ()
         linux-x86_64) RET=x86_64-linux-gnu;;
         darwin-x86) RET=i686-apple-darwin;;
         darwin-x86_64) RET=x86_64-apple-darwin;;
-        windows|windows-x86) RET=i686-w64-mingw32;;
+        windows|windows-x86) RET=i586-pc-mingw32msvc;;
         windows-x86_64) RET=x86_64-w64-mingw32;;
         android-arm) RET=arm-linux-androideabi;;
-        android-arm64) RET=aarch64-linux-android;;
         android-x86) RET=i686-linux-android;;
-        android-x86_64) RET=x86_64-linux-android;;
         android-mips) RET=mipsel-linux-android;;
-        android-mips64) RET=mips64el-linux-android;;
-        *) echo "ERROR: Unknown tag $1" >&2; echo "INVALID"; exit 1;;
     esac
     echo "$RET"
 }
@@ -141,14 +132,11 @@ bh_tag_to_config_triplet ()
 
 bh_set_build_tag ()
 {
-  SAVED_OPTIONS=$(set +o)
-  set -e
   BH_BUILD_OS=$(bh_tag_to_os $1)
   BH_BUILD_ARCH=$(bh_tag_to_arch $1)
   BH_BUILD_BITS=$(bh_tag_to_bits $1)
   BH_BUILD_TAG=$BH_BUILD_OS-$BH_BUILD_ARCH
   BH_BUILD_CONFIG=$(bh_tag_to_config_triplet $1)
-  eval "$SAVED_OPTIONS"
 }
 
 # Set default BH_BUILD macros.
@@ -156,26 +144,20 @@ bh_set_build_tag $HOST_TAG
 
 bh_set_host_tag ()
 {
-  SAVED_OPTIONS=$(set +o)
-  set -e
   BH_HOST_OS=$(bh_tag_to_os $1)
   BH_HOST_ARCH=$(bh_tag_to_arch $1)
   BH_HOST_BITS=$(bh_tag_to_bits $1)
   BH_HOST_TAG=$BH_HOST_OS-$BH_HOST_ARCH
   BH_HOST_CONFIG=$(bh_tag_to_config_triplet $1)
-  eval "$SAVED_OPTIONS"
 }
 
 bh_set_target_tag ()
 {
-  SAVED_OPTIONS=$(set +o)
-  set -e
   BH_TARGET_OS=$(bh_tag_to_os $1)
   BH_TARGET_ARCH=$(bh_tag_to_arch $1)
   BH_TARGET_BITS=$(bh_tag_to_bits $1)
   BH_TARGET_TAG=$BH_TARGET_OS-$BH_TARGET_ARCH
   BH_TARGET_CONFIG=$(bh_tag_to_config_triplet $1)
-  eval "$SAVED_OPTIONS"
 }
 
 bh_sort_systems_build_first ()
@@ -281,7 +263,7 @@ bh_arch_text ()
 bh_check_compiler ()
 {
     local CC="$1"
-    local TMPC=$TMPDIR/build-host-$USER-$$.c
+    local TMPC=/tmp/build-host-$USER-$$.c
     local TMPE=${TMPC%%.c}
     local TMPL=$TMPC.log
     local RET
@@ -381,7 +363,7 @@ _bh_check_compiler_bitness ()
 {
     local CC="$1"
     local BITS="$2"
-    local TMPC=$TMPDIR/build-host-gcc-bits-$USER-$$.c
+    local TMPC=/tmp/build-host-gcc-bits-$USER-$$.c
     local TMPL=$TMPC.log
     local RET
     shift; shift;
@@ -407,7 +389,6 @@ EOF
 # where $BH_HOST_CONFIG is a GNU configuration name.
 #
 # Important: this script might redefine $BH_HOST_CONFIG to a different value!
-# (This behavior previously happened with MinGW, but doesn't anymore.)
 #
 # $1: NDK system tag (e.g. linux-x86)
 #
@@ -420,14 +401,13 @@ EOF
 #
 #  DARWIN_TOOLCHAIN     -> Path to Darwin cross-toolchain (cross-compile only).
 #  DARWIN_SYSROOT       -> Path to Darwin SDK sysroot (cross-compile only).
+#  NDK_CCACHE           -> Ccache binary to use to speed up rebuilds.
 #  ANDROID_NDK_ROOT     -> Top-level NDK directory, for automatic probing
 #                          of prebuilt platform toolchains.
 #
 _bh_select_toolchain_for_host ()
 {
-    local HOST_CFLAGS HOST_CXXFLAGS HOST_LDFLAGS
-    local HOST_ASFLAGS HOST_WINDRES_FLAGS
-    local HOST_FULLPREFIX
+    local HOST_CFLAGS HOST_CXXFLAGS HOST_LDFLAGS HOST_FULLPREFIX DARWIN_ARCH
     local DARWIN_ARCH DARWIN_SDK_SUBDIR
 
     # We do all the complex auto-detection magic in the setup phase,
@@ -443,17 +423,25 @@ _bh_select_toolchain_for_host ()
     # directory.
     case $1 in
         linux-x86)
-            panic "Sorry, this script does not support building 32-bit Linux binaries."
+            # If possible, automatically use our custom toolchain to generate
+            # 32-bit executables that work on Ubuntu 8.04 and higher.
+            _bh_try_host_fullprefix "$(dirname $ANDROID_NDK_ROOT)/prebuilts/gcc/linux-x86/host/i686-linux-glibc2.7-4.6" i686-linux
+            _bh_try_host_fullprefix "$(dirname $ANDROID_NDK_ROOT)/prebuilts/gcc/linux-x86/host/i686-linux-glibc2.7-4.4.3" i686-linux
+            _bh_try_host_fullprefix "$(dirname $ANDROID_NDK_ROOT)/prebuilt/linux-x86/toolchain/i686-linux-glibc2.7-4.4.3" i686-linux
+            _bh_try_host_prefix i686-linux-gnu
+            _bh_try_host_prefix i686-linux
+            _bh_try_host_prefix x86_64-linux-gnu -m32
+            _bh_try_host_prefix x86_64-linux -m32
             ;;
 
         linux-x86_64)
-            local LINUX_GLIBC_PREBUILT=x86_64-linux-glibc2.15-4.8
-            _bh_try_host_fullprefix "$(dirname $ANDROID_NDK_ROOT)/prebuilts/gcc/linux-x86/host/$LINUX_GLIBC_PREBUILT" x86_64-linux
-            if [ -z "$HOST_FULLPREFIX" ]; then
-                dump "Cannot find the x86_64 Linux-targeting compiler. Make sure the"
-                dump "$LINUX_GLIBC_PREBUILT prebuilt is checked out."
-                exit 1
-            fi
+            # If possible, automaticaly use our custom toolchain to generate
+            # 64-bit executables that work on Ubuntu 8.04 and higher.
+            _bh_try_host_fullprefix "$(dirname $ANDROID_NDK_ROOT)/prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.7-4.6" x86_64-linux
+            _bh_try_host_prefix x86_64-linux-gnu
+            _bh_try_host_prefix x84_64-linux
+            _bh_try_host_prefix i686-linux-gnu -m64
+            _bh_try_host_prefix i686-linux -m64
             ;;
 
         darwin-*)
@@ -513,40 +501,40 @@ _bh_select_toolchain_for_host ()
         windows|windows-x86)
             case $BH_BUILD_OS in
                 linux)
-                    # Prefer the prebuilt cross-compiler.
-                    _bh_try_host_fullprefix "$(dirname $ANDROID_NDK_ROOT)/prebuilts/gcc/linux-x86/host/x86_64-w64-mingw32-4.8" x86_64-w64-mingw32 -m32
                     # We favor these because they are more recent, and because
                     # we have a script to rebuild them from scratch. See
-                    # build-mingw64-toolchain.sh. Typically provided by the
-                    # 'mingw-w64' package on Debian and Ubuntu systems.
-                    _bh_try_host_prefix i686-w64-mingw32
+                    # build-mingw64-toolchain.sh.
                     _bh_try_host_prefix x86_64-w64-mingw32 -m32
+                    _bh_try_host_prefix i686-w64-mingw32
+                    # Typically provided by the 'mingw32' package on Debian
+                    # and Ubuntu systems.
+                    _bh_try_host_prefix i586-mingw32msvc
                     # Special note for Fedora: this distribution used
                     # to have a mingw32-gcc package that provided a 32-bit
                     # only cross-toolchain named i686-pc-mingw32.
                     # Later versions of the distro now provide a new package
                     # named mingw-gcc which provides i686-w64-mingw32 and
                     # x86_64-w64-mingw32 instead.
+                    _bh_try_host_prefix i686-pc-mingw32
                     if [ -z "$HOST_FULLPREFIX" ]; then
                         dump "There is no Windows cross-compiler. Ensure that you"
                         dump "have one of these installed and in your path:"
-                        dump "   i686-w64-mingw32-gcc    (see build-mingw64-toolchain.sh)"
                         dump "   x86_64-w64-mingw32-gcc  (see build-mingw64-toolchain.sh)"
+                        dump "   i686-w64-mingw32-gcc    (see build-mingw64-toolchain.sh)"
+                        dump "   i586-mingw32msvc-gcc    ('mingw32' Debian/Ubuntu package)"
+                        dump "   i686-pc-mingw32         (on Fedora)"
                         dump ""
                         exit 1
                     fi
-                    if [ "$BH_HOST_CONFIG" != i686-w64-mingw32 ]; then
-                        panic "Unexpected value of BH_HOST_CONFIG: $BH_HOST_CONFIG"
-                    fi
-                    # If the 32-bit wrappers call a 64-bit toolchain, add flags
-                    # to default ld/as/windres to 32 bits.
-                    case "$HOST_FULLPREFIX" in
-                        *x86_64-w64-mingw32-)
-                            HOST_LDFLAGS="-m i386pe"
-                            HOST_ASFLAGS="--32"
-                            HOST_WINDRES_FLAGS="-F pe-i386"
+                    # Adjust $HOST to match the toolchain to ensure proper builds.
+                    # I.e. chose configuration triplets that are known to work
+                    # with the gmp/mpfr/mpc/binutils/gcc configure scripts.
+                    case $HOST_FULLPREFIX in
+                        *-mingw32msvc-*|i686-pc-mingw32)
+                            BH_HOST_CONFIG=i586-pc-mingw32msvc
                             ;;
                         *)
+                            BH_HOST_CONFIG=i686-w64-mingw32msvc
                             ;;
                     esac
                     ;;
@@ -560,20 +548,33 @@ _bh_select_toolchain_for_host ()
         windows-x86_64)
             case $BH_BUILD_OS in
                 linux)
-                    # Prefer the prebuilt cross-compiler.
-                    # See comments above for windows-x86.
-                    _bh_try_host_fullprefix "$(dirname $ANDROID_NDK_ROOT)/prebuilts/gcc/linux-x86/host/x86_64-w64-mingw32-4.8" x86_64-w64-mingw32
+                    # See comments above for windows-x86
                     _bh_try_host_prefix x86_64-w64-mingw32
+                    _bh_try_host_prefix i686-w64-mingw32 -m64
+                    # Beware that this package is completely broken on many
+                    # versions of no vinegar Ubuntu (i.e. it fails at building trivial
+                    # programs).
+                    _bh_try_host_prefix amd64-mingw32msvc
+                    # There is no x86_64-pc-mingw32 toolchain on Fedora.
                     if [ -z "$HOST_FULLPREFIX" ]; then
                         dump "There is no Windows cross-compiler in your path. Ensure you"
                         dump "have one of these installed and in your path:"
                         dump "   x86_64-w64-mingw32-gcc  (see build-mingw64-toolchain.sh)"
+                        dump "   i686-w64-mingw32-gcc    (see build-mingw64-toolchain.sh)"
+                        dump "   amd64-mingw32msvc-gcc   (Debian/Ubuntu - broken until Ubuntu 11.10)"
                         dump ""
                         exit 1
                     fi
-                    if [ "$BH_HOST_CONFIG" != x86_64-w64-mingw32 ]; then
-                        panic "Unexpected value of BH_HOST_CONFIG: $BH_HOST_CONFIG"
-                    fi
+                    # See comment above for windows-x86
+                    case $HOST_FULLPREFIX in
+                        *-mingw32msvc*)
+                            # Actually, this has never been tested.
+                            BH_HOST=amd64-pc-mingw32msvc
+                            ;;
+                        *)
+                            BH_HOST=x86_64-w64-mingw32
+                            ;;
+                    esac
                     ;;
 
                 *) panic "Sorry, this script only supports building windows binaries on Linux."
@@ -599,6 +600,13 @@ _bh_select_toolchain_for_host ()
         HOST_CXXFLAGS=$HOST_CXXFLAGS" "$TRY_CFLAGS
     fi
 
+    # Support for ccache, to speed up rebuilds.
+    DST_PREFIX=$HOST_FULLPREFIX
+    local CCACHE=
+    if [ "$NDK_CCACHE" ]; then
+        CCACHE="--ccache=$NDK_CCACHE"
+    fi
+
     # We're going to generate a wrapper toolchain with the $HOST prefix
     # i.e. if $HOST is 'i686-linux-gnu', then we're going to generate a
     # wrapper toolchain named 'i686-linux-gnu-gcc' that will redirect
@@ -611,19 +619,18 @@ _bh_select_toolchain_for_host ()
     run mkdir -p "$BH_WRAPPERS_DIR" &&
     run $NDK_BUILDTOOLS_PATH/gen-toolchain-wrapper.sh "$BH_WRAPPERS_DIR" \
         --src-prefix="$BH_HOST_CONFIG-" \
-        --dst-prefix="$HOST_FULLPREFIX" \
+        --dst-prefix="$DST_PREFIX" \
         --cflags="$HOST_CFLAGS" \
         --cxxflags="$HOST_CXXFLAGS" \
         --ldflags="$HOST_LDFLAGS" \
-        --asflags="$HOST_ASFLAGS" \
-        --windres-flags="$HOST_WINDRES_FLAGS"
+        $CCACHE
 }
 
 
 # Setup the build directory, i.e. a directory where all intermediate
 # files will be placed.
 #
-# $1: Build directory. Required.
+# $1: Build directory. If empty, a random one will be selected.
 #
 # $2: Either 'preserve' or 'remove'. Indicates what to do of
 #     existing files in the build directory, if any.
@@ -634,10 +641,12 @@ bh_setup_build_dir ()
 {
     BH_BUILD_DIR="$1"
     if [ -z "$BH_BUILD_DIR" ]; then
-        panic "bh_setup_build_dir received no build directory"
+        BH_BUILD_DIR=/tmp/ndk-$USER/buildhost
     fi
     mkdir -p "$BH_BUILD_DIR"
     fail_panic "Could not create build directory: $BH_BUILD_DIR"
+
+    setup_default_log_file $BH_BUILD_DIR/build.log
 
     if [ "$_BH_OPTION_FORCE" ]; then
         rm -rf "$BH_BUILD_DIR"/*
@@ -756,16 +765,37 @@ bh_register_options ()
     fi
 }
 
-# Execute a given command.
+# Execute a given command if the corresponding timestamp hasn't been touched
 #
 # NOTE: The command is run in its own sub-shell to avoid environment
 #        contamination.
 #
-# $@: command
-bh_do ()
+# $1: timestamps name
+# $2+: command
+bh_stamps_do ()
 {
-    ("$@")
-    fail_panic
+    local STAMP_NAME=$1
+    shift
+    if [ ! -f "$BH_STAMPS_DIR/$STAMP_NAME" ]; then
+        ("$@")
+        fail_panic
+        mkdir -p "$BH_STAMPS_DIR" && touch "$BH_STAMPS_DIR/$STAMP_NAME"
+    fi
+}
+
+# Return host tag with only translation that windows-x86 -> windows
+#
+# $1: host system tag
+install_dir_from_host_tag ()
+{
+    case $1 in
+        windows-x86)
+            echo "windows"
+            ;;
+        *)
+            echo "$1"
+            ;;
+    esac
 }
 
 # Return the build install directory of a given Python version
@@ -778,7 +808,7 @@ bh_do ()
 #  python_ndk_install_dir with nothing.
 python_build_install_dir ()
 {
-    echo "$BH_BUILD_DIR/$1/install/host-tools"
+    echo "$BH_BUILD_DIR/install/prebuilt/$(install_dir_from_host_tag $1)"
 }
 
 # Same as python_build_install_dir, but for the final NDK installation
@@ -787,5 +817,5 @@ python_build_install_dir ()
 # $1: host system tag
 python_ndk_install_dir ()
 {
-    echo "host-tools"
+    echo "prebuilt/$(install_dir_from_host_tag $1)"
 }

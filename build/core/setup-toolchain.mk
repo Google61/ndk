@@ -17,25 +17,33 @@
 # to setup the target toolchain for a given platform/abi combination.
 #
 
-$(call assert-defined,TARGET_PLATFORM_LEVEL TARGET_ARCH TARGET_ARCH_ABI)
+$(call assert-defined,TARGET_PLATFORM TARGET_ARCH TARGET_ARCH_ABI)
 $(call assert-defined,NDK_APPS NDK_APP_STL)
+
+LLVM_VERSION_LIST := 2.6 2.7 2.8 2.9 3.0 3.1 3.2 3.3 3.4 3.5 3.6
+NDK_64BIT_TOOLCHAIN_LIST := clang3.6 clang3.5 clang3.4 4.9
 
 # Check that we have a toolchain that supports the current ABI.
 # NOTE: If NDK_TOOLCHAIN is defined, we're going to use it.
+#
 ifndef NDK_TOOLCHAIN
-    # TODO: Remove all the multiple-toolchain configuration stuff. We only have
-    # Clang.
+    TARGET_TOOLCHAIN_LIST := $(strip $(sort $(NDK_ABI.$(TARGET_ARCH_ABI).toolchains)))
 
-    # This is a sorted list of toolchains that support the given ABI. For older
-    # NDKs this was a bit more complicated, but now we just have the GCC and the
-    # Clang toolchains with GCC being first (named "*-4.9", whereas clang is
-    # "*-clang").
-    TARGET_TOOLCHAIN_LIST := \
-        $(strip $(sort $(NDK_ABI.$(TARGET_ARCH_ABI).toolchains)))
+    # Filter out the Clang toolchain, so that we can keep GCC as the default
+    # toolchain.
+    $(foreach _ver,$(LLVM_VERSION_LIST), \
+        $(eval TARGET_TOOLCHAIN_LIST := \
+            $(filter-out %-clang$(_ver),$(TARGET_TOOLCHAIN_LIST))))
 
-    ifneq ($(words $(TARGET_TOOLCHAIN_LIST)),1)
-        $(call __ndk_error,Expected two items in TARGET_TOOLCHAIN_LIST, \
-            found "$(TARGET_TOOLCHAIN_LIST)")
+    ifeq (,$(findstring 64,$(TARGET_ARCH_ABI)))
+      # Filter out 4.6 and 4.7 which are deprecated
+      __filtered_toolchain_list := $(filter-out %4.6 %4.7,$(TARGET_TOOLCHAIN_LIST))
+      ifdef __filtered_toolchain_list
+          TARGET_TOOLCHAIN_LIST := $(__filtered_toolchain_list)
+      endif
+    else
+      # Filter out 4.6, 4.7 and 4.8 which don't have good 64-bit support in all supported arch
+      TARGET_TOOLCHAIN_LIST := $(filter-out %4.6 %4.7 %4.8 %4.8l,$(TARGET_TOOLCHAIN_LIST))
     endif
 
     ifndef TARGET_TOOLCHAIN_LIST
@@ -44,11 +52,55 @@ ifndef NDK_TOOLCHAIN
         $(call __ndk_info,a set of the following values: $(NDK_ALL_ABIS))
         $(call __ndk_error,Aborting)
     endif
-
-    # We default to using Clang, which is the last item in the list.
-    TARGET_TOOLCHAIN := $(lastword $(TARGET_TOOLCHAIN_LIST))
-
-    $(call ndk_log,Using target toolchain '$(TARGET_TOOLCHAIN)' for '$(TARGET_ARCH_ABI)' ABI)
+    # Select the last toolchain from the sorted list.
+    # For now, this is enough to select by default gcc4.8 for 32-bit, and 4.9 for 64-bit, the the
+    # latest llvm if no gcc
+    ifneq (,$(filter-out llvm-%,$(TARGET_TOOLCHAIN_LIST)))
+        TARGET_TOOLCHAIN := $(firstword $(TARGET_TOOLCHAIN_LIST))
+    else
+        TARGET_TOOLCHAIN := $(lastword $(TARGET_TOOLCHAIN_LIST))
+    endif
+    # If NDK_TOOLCHAIN_VERSION is defined, we replace the toolchain version
+    # suffix with it.
+    #
+    ifdef NDK_TOOLCHAIN_VERSION
+        # Replace "clang" with the most recent verion
+        ifeq ($(NDK_TOOLCHAIN_VERSION),clang)
+            override NDK_TOOLCHAIN_VERSION := clang$(lastword $(LLVM_VERSION_LIST))
+        endif
+        __use_ndk_toolchain_version := true
+        ifneq (,$(findstring 64,$(TARGET_ARCH_ABI)))
+            # don't allow NDK_TOOLCHAIN_VERSION to change if it doesn't support 64-bit
+            ifeq (,$(filter $(NDK_64BIT_TOOLCHAIN_LIST),$(NDK_TOOLCHAIN_VERSION)))
+                $(call ndk_log,Specified NDK_TOOLCHAIN_VERSION $(NDK_TOOLCHAIN_VERSION) does not support 64-bit)
+                $(call ndk_log,Using default target toolchain '$(TARGET_TOOLCHAIN)' for '$(TARGET_ARCH_ABI)' ABI)
+                __use_ndk_toolchain_version := false;
+            endif
+        endif
+        ifeq ($(__use_ndk_toolchain_version),true)
+            # We assume the toolchain name uses dashes (-) as separators and doesn't
+            # contain any space. The following is a bit subtle, but essentially
+            # does the following:
+            #
+            #   1/ Use 'subst' to convert dashes into spaces, this generates a list
+            #   2/ Use 'chop' to remove the last element of the list
+            #   3/ Use 'subst' again to convert the spaces back into dashes
+            #
+            # So it TARGET_TOOLCHAIN is 'foo-bar-zoo-xxx', then
+            # TARGET_TOOLCHAIN_BASE will be 'foo-bar-zoo'
+            #
+            TARGET_TOOLCHAIN_BASE := $(subst $(space),-,$(call chop,$(subst -,$(space),$(TARGET_TOOLCHAIN))))
+            # if TARGET_TOOLCHAIN_BASE is llvm, remove clang from NDK_TOOLCHAIN_VERSION
+            VERSION := $(NDK_TOOLCHAIN_VERSION)
+            ifeq ($(TARGET_TOOLCHAIN_BASE),llvm)
+                VERSION := $(subst clang,,$(NDK_TOOLCHAIN_VERSION))
+            endif
+            TARGET_TOOLCHAIN := $(TARGET_TOOLCHAIN_BASE)-$(VERSION)
+            $(call ndk_log,Using target toolchain '$(TARGET_TOOLCHAIN)' for '$(TARGET_ARCH_ABI)' ABI (through NDK_TOOLCHAIN_VERSION))
+        endif
+    else
+        $(call ndk_log,Using target toolchain '$(TARGET_TOOLCHAIN)' for '$(TARGET_ARCH_ABI)' ABI)
+    endif
 else # NDK_TOOLCHAIN is not empty
     TARGET_TOOLCHAIN_LIST := $(strip $(filter $(NDK_TOOLCHAIN),$(NDK_ABI.$(TARGET_ARCH_ABI).toolchains)))
     ifndef TARGET_TOOLCHAIN_LIST
@@ -61,6 +113,17 @@ else # NDK_TOOLCHAIN is not empty
     TARGET_TOOLCHAIN := $(NDK_TOOLCHAIN)
 endif # NDK_TOOLCHAIN is not empty
 
+TARGET_ABI := $(TARGET_PLATFORM)-$(TARGET_ARCH_ABI)
+
+# setup sysroot variable.
+# SYSROOT_INC points to a directory that contains all public header
+# files for a given platform, and
+# SYSROOT_LIB points to libraries and object files used for linking
+# the generated target files properly.
+#
+SYSROOT_INC := $(NDK_PLATFORMS_ROOT)/$(TARGET_PLATFORM)/arch-$(TARGET_ARCH)
+SYSROOT_LINK := $(SYSROOT_INC)
+
 TARGET_PREBUILT_SHARED_LIBRARIES :=
 
 # Define default values for TOOLCHAIN_NAME, this can be overriden in
@@ -68,11 +131,32 @@ TARGET_PREBUILT_SHARED_LIBRARIES :=
 TOOLCHAIN_NAME   := $(TARGET_TOOLCHAIN)
 TOOLCHAIN_VERSION := $(call last,$(subst -,$(space),$(TARGET_TOOLCHAIN)))
 
+# Define the root path of the toolchain in the NDK tree.
+TOOLCHAIN_ROOT   := $(NDK_ROOT)/toolchains/$(TOOLCHAIN_NAME)
+
+# Define the root path where toolchain prebuilts are stored
+TOOLCHAIN_PREBUILT_ROOT := $(call host-prebuilt-tag,$(TOOLCHAIN_ROOT))
+
+# Do the same for TOOLCHAIN_PREFIX. Note that we must chop the version
+# number from the toolchain name, e.g. arm-eabi-4.4.0 -> path/bin/arm-eabi-
+# to do that, we split at dashes, remove the last element, then merge the
+# result. Finally, add the complete path prefix.
+#
+TOOLCHAIN_PREFIX := $(call merge,-,$(call chop,$(call split,-,$(TOOLCHAIN_NAME))))-
+TOOLCHAIN_PREFIX := $(TOOLCHAIN_PREBUILT_ROOT)/bin/$(TOOLCHAIN_PREFIX)
+
 # We expect the gdbserver binary for this toolchain to be located at its root.
 TARGET_GDBSERVER := $(NDK_ROOT)/prebuilt/android-$(TARGET_ARCH)/gdbserver/gdbserver
 
 # compute NDK_APP_DST_DIR as the destination directory for the generated files
 NDK_APP_DST_DIR := $(NDK_APP_LIBS_OUT)/$(TARGET_ARCH_ABI)
+# install armeabi-v7a-hard to lib/armeabi-v7a, unless under testing where env. var. _NDK_TESTING_ALL_
+# is set to one of yes, all, all32, or all64
+ifeq (,$(filter yes all all32 all64,$(_NDK_TESTING_ALL_)))
+ifeq ($(TARGET_ARCH_ABI),armeabi-v7a-hard)
+NDK_APP_DST_DIR := $(NDK_APP_LIBS_OUT)/armeabi-v7a
+endif
+endif
 
 # Default build commands, can be overriden by the toolchain's setup script
 include $(BUILD_SYSTEM)/default-build-commands.mk
@@ -80,40 +164,52 @@ include $(BUILD_SYSTEM)/default-build-commands.mk
 # now call the toolchain-specific setup script
 include $(NDK_TOOLCHAIN.$(TARGET_TOOLCHAIN).setup)
 
-# Setup sysroot variables.
-#
-# Note that these are not needed for the typical case of invoking Clang, as
-# Clang already knows where the sysroot is relative to itself. We still need to
-# manually refer to these in some places because other tools such as yasm and
-# the renderscript compiler don't have this knowledge.
-
-# SYSROOT_INC points to a directory that contains all public header files for a
-# given platform.
-ifndef NDK_UNIFIED_SYSROOT_PATH
-    NDK_UNIFIED_SYSROOT_PATH := $(TOOLCHAIN_ROOT)/sysroot
-endif
-
-# TODO: Have the driver add the library path to -rpath-link.
-SYSROOT_INC := $(NDK_UNIFIED_SYSROOT_PATH)
-
-SYSROOT_LIB_DIR := $(NDK_UNIFIED_SYSROOT_PATH)/usr/lib/$(TOOLCHAIN_NAME)
-SYSROOT_API_LIB_DIR := $(SYSROOT_LIB_DIR)/$(TARGET_PLATFORM_LEVEL)
-
-# API-specific library directory comes first to make the linker prefer shared
-# libs over static libs.
-SYSROOT_LINK_ARG := -L $(SYSROOT_API_LIB_DIR) -L $(SYSROOT_LIB_DIR)
-
-# Architecture specific headers like asm/ and machine/ are installed to an
-# arch-$ARCH subdirectory of the sysroot.
-SYSROOT_ARCH_INC_ARG := \
-    -isystem $(SYSROOT_INC)/usr/include/$(TOOLCHAIN_NAME)
-
-NDK_TOOLCHAIN_RESOURCE_DIR := $(shell $(TARGET_CXX) -print-resource-dir)
-NDK_TOOLCHAIN_LIB_DIR := $(strip $(NDK_TOOLCHAIN_RESOURCE_DIR))/lib/linux
-
 clean-installed-binaries::
 
-include $(BUILD_SYSTEM)/gdb.mk
+# Ensure that for debuggable applications, gdbserver will be copied to
+# the proper location
+
+NDK_APP_GDBSERVER := $(NDK_APP_DST_DIR)/gdbserver
+NDK_APP_GDBSETUP := $(NDK_APP_DST_DIR)/gdb.setup
+
+ifeq ($(NDK_APP_DEBUGGABLE),true)
+ifeq ($(TARGET_SONAME_EXTENSION),.so)
+
+installed_modules: $(NDK_APP_GDBSERVER)
+
+$(NDK_APP_GDBSERVER): PRIVATE_ABI     := $(TARGET_ARCH_ABI)
+$(NDK_APP_GDBSERVER): PRIVATE_NAME    := $(TOOLCHAIN_NAME)
+$(NDK_APP_GDBSERVER): PRIVATE_SRC     := $(TARGET_GDBSERVER)
+$(NDK_APP_GDBSERVER): PRIVATE_DST     := $(NDK_APP_GDBSERVER)
+
+$(call generate-file-dir,$(NDK_APP_GDBSERVER))
+
+$(NDK_APP_GDBSERVER): clean-installed-binaries
+	$(call host-echo-build-step,$(PRIVATE_ABI),Gdbserver) "[$(PRIVATE_NAME)] $(call pretty-dir,$(PRIVATE_DST))"
+	$(hide) $(call host-install,$(PRIVATE_SRC),$(PRIVATE_DST))
+endif
+
+# Install gdb.setup for both .so and .bc projects
+ifneq (,$(filter $(TARGET_SONAME_EXTENSION),.so .bc))
+installed_modules: $(NDK_APP_GDBSETUP)
+
+$(NDK_APP_GDBSETUP): PRIVATE_ABI := $(TARGET_ARCH_ABI)
+$(NDK_APP_GDBSETUP): PRIVATE_DST := $(NDK_APP_GDBSETUP)
+$(NDK_APP_GDBSETUP): PRIVATE_SOLIB_PATH := $(TARGET_OUT)
+$(NDK_APP_GDBSETUP): PRIVATE_SRC_DIRS := $(SYSROOT_INC)/usr/include
+
+$(NDK_APP_GDBSETUP):
+	$(call host-echo-build-step,$(PRIVATE_ABI),Gdbsetup) "$(call pretty-dir,$(PRIVATE_DST))"
+	$(hide) $(HOST_ECHO) "set solib-search-path $(call host-path,$(PRIVATE_SOLIB_PATH))" > $(PRIVATE_DST)
+	$(hide) $(HOST_ECHO) "source $(call host-path,$(NDK_ROOT)/prebuilt/common/gdb/common.setup)" >> $(PRIVATE_DST)
+	$(hide) $(HOST_ECHO) "directory $(call host-path,$(call remove-duplicates,$(PRIVATE_SRC_DIRS)))" >> $(PRIVATE_DST)
+
+$(call generate-file-dir,$(NDK_APP_GDBSETUP))
+
+# This prevents parallel execution to clear gdb.setup after it has been written to
+$(NDK_APP_GDBSETUP): clean-installed-binaries
+endif
+endif
 
 # free the dictionary of LOCAL_MODULE definitions
 $(call modules-clear)
@@ -123,21 +219,6 @@ $(call ndk-stl-select,$(NDK_APP_STL))
 # now parse the Android.mk for the application, this records all
 # module declarations, but does not populate the dependency graph yet.
 include $(NDK_APP_BUILD_SCRIPT)
-
-# Avoid computing sanitizer/wrap.sh things in the DUMP_VAR case because both of
-# these will create build rules and we want to avoid that. The DUMP_VAR case
-# also doesn't parse the module definitions, so we're missing a lot of the
-# information we need.
-ifeq (,$(DUMP_VAR))
-    # Comes after NDK_APP_BUILD_SCRIPT because we need to know if *any* module
-    # has -fsanitize in its ldflags.
-    include $(BUILD_SYSTEM)/sanitizers.mk
-    include $(BUILD_SYSTEM)/openmp.mk
-
-    ifneq ($(NDK_APP_WRAP_SH_$(TARGET_ARCH_ABI)),)
-        include $(BUILD_SYSTEM)/install_wrap_sh.mk
-    endif
-endif
 
 $(call ndk-stl-add-dependencies,$(NDK_APP_STL))
 

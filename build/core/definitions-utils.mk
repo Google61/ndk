@@ -49,11 +49,6 @@ comma := ,
 # -----------------------------------------------------------------------------
 colon := :
 
-define newline
-
-
-endef
-
 # -----------------------------------------------------------------------------
 # Function : remove-duplicates
 # Arguments: a list
@@ -268,5 +263,3 @@ left-justify-quoted-15 = $(call -left-justify,$1,xxxxxxxxxxxxxxx)
   $(call test-expect,,$(call -justification-margin,xxxxxx,xxxxxx))\
   $(call test-expect,,$(call -justification-margin,xxxxxxxxxxx,xxxxxx))\
 
-# Escapes \ to \\. Useful for escaping Windows paths.
-escape-backslashes = $(subst \,\\,$1)

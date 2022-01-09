@@ -25,21 +25,11 @@
  * OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
-
 #ifndef NDK_ANDROID_SUPPORT_UCHAR_H
 #define NDK_ANDROID_SUPPORT_UCHAR_H
 
-#include_next <uchar.h>
+// __LP64__
 
-__BEGIN_DECLS
+#warning Not implemented
 
-#if __ANDROID_API__ < __ANDROID_API_L__
-size_t c16rtomb(char* __restrict, char16_t, mbstate_t* __restrict);
-size_t c32rtomb(char* __restrict, char32_t, mbstate_t* __restrict);
-size_t mbrtoc16(char16_t* __restrict, const char* __restrict, size_t, mbstate_t* __restrict);
-size_t mbrtoc32(char32_t* __restrict, const char* __restrict, size_t, mbstate_t* __restrict);
-#endif
-
-__END_DECLS
-
-#endif
+#endif  // NDK_ANDROID_SUPPORT_UCHAR_H
