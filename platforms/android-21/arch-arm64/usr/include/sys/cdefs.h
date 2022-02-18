@@ -577,17 +577,4 @@
 #endif
 #define __BIONIC_FORTIFY_UNKNOWN_SIZE ((size_t) -1)
 
-
-#if defined(__ANDROID__) && !defined(__LP64__) && defined( __arm__)
-#define __NDK_FPABI__ __attribute__((pcs("aapcs")))
-#else
-#define __NDK_FPABI__
-#endif
-
-#if (!defined(_NDK_MATH_NO_SOFTFP) || _NDK_MATH_NO_SOFTFP != 1) && !defined(__clang__)
-#define __NDK_FPABI_MATH__ __NDK_FPABI__
-#else
-#define __NDK_FPABI_MATH__  /* nothing */
-#endif
-
 #endif /* !_SYS_CDEFS_H_ */

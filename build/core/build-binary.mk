@@ -51,6 +51,11 @@ endif
 # when we detect this case.
 libs_in_ldflags := $(filter -l% %.so %.a,$(LOCAL_LDLIBS) $(LOCAL_LDFLAGS))
 
+# Since the above will glob anything ending in .so or .a, we need to filter out
+# any cases of -Wl,--exclude-libs since we use that to hide symbols in STLs.
+libs_in_ldflags := \
+    $(filter-out -Wl$(comma)--exclude-libs$(comma)%,$(libs_in_ldflags))
+
 # Remove the system libraries we know about from the warning, it's ok
 # (and actually expected) to link them with -l<name>.
 system_libs := \
@@ -67,17 +72,9 @@ system_libs := \
     GLESv1_CM \
     GLESv2 \
     GLESv3 \
+    vulkan \
     OpenSLES \
     OpenMAXAL \
-    bcc \
-    bcinfo \
-    cutils \
-    gui \
-    RScpp \
-    RScpp_static \
-    RS \
-    ui \
-    utils \
     mediandk \
     atomic
 
@@ -146,6 +143,10 @@ LOCAL_RS_OBJECTS :=
 #
 LOCAL_CFLAGS := -DANDROID $(LOCAL_CFLAGS)
 
+ifeq ($(APP_UNIFIED_HEADERS),true)
+    LOCAL_CFLAGS += -D__ANDROID_API__=$(TARGET_PLATFORM_LEVEL)
+endif
+
 #
 # Add the default system shared libraries to the build
 #
@@ -169,6 +170,8 @@ ifeq ($(LOCAL_CPP_EXTENSION),)
   LOCAL_CPP_EXTENSION := $(default-c++-extensions)
 endif
 LOCAL_RS_EXTENSION := $(default-rs-extensions)
+
+LOCAL_LDFLAGS += -Wl,--build-id
 
 #
 # If LOCAL_ALLOW_UNDEFINED_SYMBOLS is not true, the linker will allow the generation
@@ -198,6 +201,17 @@ else
   LOCAL_LDFLAGS += $($(my)RELRO_LDFLAGS)
 endif
 
+# We enable shared text relocation warnings by default. These are not allowed in
+# current versions of Android (android-21 for LP64 ABIs, android-23 for LP32
+# ABIs).
+LOCAL_LDFLAGS += -Wl,--warn-shared-textrel
+
+# We enable fatal linker warnings by default.
+# If LOCAL_DISABLE_FATAL_LINKER_WARNINGS is true, we don't enable this check.
+ifneq ($(LOCAL_DISABLE_FATAL_LINKER_WARNINGS),true)
+  LOCAL_LDFLAGS += -Wl,--fatal-warnings
+endif
+
 # By default, we protect against format string vulnerabilities
 # If LOCAL_DISABLE_FORMAT_STRING_CHECKS is true, we disable the protections.
 ifeq ($(LOCAL_DISABLE_FORMAT_STRING_CHECKS),true)
@@ -210,20 +224,35 @@ endif
 ifneq (,$(filter true,$(NDK_APP_PIE) $(TARGET_PIE)))
   ifeq ($(call module-get-class,$(LOCAL_MODULE)),EXECUTABLE)
     ifeq (,$(filter -static,$(TARGET_LDFLAGS) $(LOCAL_LDFLAGS) $(NDK_APP_LDFLAGS)))
-      LOCAL_CFLAGS += -fPIE
-      LOCAL_LDFLAGS += -fPIE -pie
+      # x86 and x86_64 use large model pic, whereas everything else uses small
+      # model. In the past we've always used -fPIE, but the LLVMgold plugin (for
+      # LTO) complains if the models are mismatched.
+      ifneq (,$(filter x86 x86_64,$(TARGET_ARCH_ABI)))
+        LOCAL_CFLAGS += -fPIE
+        LOCAL_LDFLAGS += -fPIE -pie
+      else
+        LOCAL_CFLAGS += -fpie
+        LOCAL_LDFLAGS += -fpie -pie
+      endif
     endif
   endif
 endif
 
-# Uncomment the following to enable multithreaded ld.gold by default for arm, x86 and x86_64
-# unless (conservatively) -fuse-ld= is specified
-#
-#ifneq (,$(filter $(TARGET_ARCH_ABI), armeabi armeabi-v7a armeabi-v7a-hard x86 x86_64))
-#  ifeq (,$(filter -fuse-ld=,$(TARGET_LDFLAGS) $(LOCAL_LDFLAGS) $(NDK_APP_LDFLAGS)))
-#    LOCAL_LDFLAGS += -Wl,--threads
-#  endif
-#endif
+# http://b.android.com/222239
+# http://b.android.com/220159 (internal http://b/31809417)
+# x86 devices have stack alignment issues.
+ifeq ($(TARGET_ARCH_ABI),x86)
+    LOCAL_CFLAGS += -mstackrealign
+endif
+
+# https://github.com/android-ndk/ndk/issues/297
+ifeq ($(TARGET_ARCH_ABI),x86)
+    ifneq (,$(call lt,$(APP_PLATFORM_LEVEL),17))
+        ifeq ($(NDK_TOOLCHAIN_VERSION),4.9)
+            LOCAL_CFLAGS += -mstack-protector-guard=global
+        endif
+    endif
+endif
 
 #
 # The original Android build system allows you to use the .arm prefix
@@ -244,6 +273,9 @@ ifdef LOCAL_ARM_MODE
       $(call __ndk_info,   LOCAL_ARM_MODE must be defined to either 'arm' or 'thumb' in $(LOCAL_MAKEFILE) not '$(LOCAL_ARM_MODE)')\
       $(call __ndk_error, Aborting)\
   )
+  my_link_arm_mode := $(LOCAL_ARM_MODE)
+else
+  my_link_arm_mode := thumb
 endif
 
 # As a special case, the original Android build system
@@ -286,8 +318,8 @@ endif
 
 neon_sources := $(strip $(neon_sources))
 ifdef neon_sources
-  ifeq ($(filter $(TARGET_ARCH_ABI), armeabi-v7a armeabi-v7a-hard x86),)
-    $(call __ndk_info,NEON support is only possible for armeabi-v7a ABI, its variant armeabi-v7a-hard and x86 ABI)
+  ifeq ($(filter $(TARGET_ARCH_ABI), armeabi-v7a arm64-v8a x86 x86_64),)
+    $(call __ndk_info,NEON support is only available for armeabi-v7a, arm64-v8a, x86, and x86_64 ABIs)
     $(call __ndk_info,Please add checks against TARGET_ARCH_ABI in $(LOCAL_MAKEFILE))
     $(call __ndk_error,Aborting)
   endif
@@ -310,14 +342,6 @@ ifeq ($(LOCAL_ARM_MODE),arm)
     ifneq (,$(LOCAL_PCH))
         $(call tag-src-files,$(LOCAL_PCH),arm)
     endif
-else
-# For arm, all sources are compiled in thumb mode by default in release mode.
-# Linker should behave similarly
-ifneq ($(filter armeabi%, $(TARGET_ARCH_ABI)),)
-ifneq ($(APP_OPTIM),debug)
-    LOCAL_LDFLAGS += -mthumb
-endif
-endif
 endif
 ifeq ($(LOCAL_ARM_MODE),thumb)
     arm_sources := $(empty)
@@ -406,7 +430,7 @@ endif
 #
 ifneq (,$(call module-has-c++-features,$(LOCAL_MODULE),rtti exceptions))
     ifeq (system,$(NDK_APP_STL))
-      LOCAL_LDLIBS := $(LOCAL_LDLIBS) $(call host-path,$(NDK_ROOT)/sources/cxx-stl/gnu-libstdc++/$(TOOLCHAIN_VERSION)/libs/$(TARGET_ARCH_ABI)/libsupc++$(TARGET_LIB_EXTENSION))
+      LOCAL_LDLIBS := $(LOCAL_LDLIBS) $(call host-path,$(NDK_ROOT)/sources/cxx-stl/gnu-libstdc++/4.9/libs/$(TARGET_ARCH_ABI)/libsupc++$(TARGET_LIB_EXTENSION))
     endif
 endif
 
@@ -417,13 +441,14 @@ ifneq ($(LOCAL_RENDERSCRIPT_INCLUDES_OVERRIDE),)
     LOCAL_RENDERSCRIPT_INCLUDES := $(LOCAL_RENDERSCRIPT_INCLUDES_OVERRIDE)
 else
     LOCAL_RENDERSCRIPT_INCLUDES := \
+        $(RENDERSCRIPT_PLATFORM_HEADER)/scriptc \
         $(RENDERSCRIPT_TOOLCHAIN_HEADER) \
-        $(TARGET_C_INCLUDES)/rs/scriptc \
         $(LOCAL_RENDERSCRIPT_INCLUDES)
 endif
 
+# Only enable the compatibility path when LOCAL_RENDERSCRIPT_COMPATIBILITY is defined.
 RS_COMPAT :=
-ifneq ($(call module-is-shared-library,$(LOCAL_MODULE)),)
+ifeq ($(LOCAL_RENDERSCRIPT_COMPATIBILITY),true)
     RS_COMPAT := true
 endif
 
@@ -441,16 +466,46 @@ ifneq (,$(LOCAL_PCH))
     # Build PCH into obj directory
     LOCAL_BUILT_PCH := $(call get-pch-name,$(LOCAL_PCH))
 
+    # Clang whines about a "c-header" (.h rather than .hpp) being used in C++
+    # mode (note that we use compile-cpp-source to build the header).
+    LOCAL_SRC_FILES_TARGET_CFLAGS.$(LOCAL_PCH) += -x c++-header
+
     # Build PCH
     $(call compile-cpp-source,$(LOCAL_PCH),$(LOCAL_BUILT_PCH).gch)
 
-    # All obj files are dependent on the PCH
-    $(foreach src,$(filter $(all_cpp_patterns),$(LOCAL_SRC_FILES)),\
+    # The PCH must be compiled the same way as the sources (thumb vs arm, neon
+    # vs non-neon must match). This means that we'd have to generate a PCH for
+    # each combination of foo.c.arm and foo.c.neon (do we allow
+    # foo.c.arm.neon?).
+    #
+    # Since files with those source tags should be the minority, precompiling
+    # that header might be a net loss compared to just using it normally. As
+    # such, we only use the PCH for the default compilation mode for the module.
+    #
+    # See https://github.com/android-ndk/ndk/issues/14
+    TAGS_TO_FILTER :=
+
+    # If neon is off, strip out .neon files.
+    ifneq (true,$(LOCAL_ARM_NEON))
+        TAGS_TO_FILTER += neon
+    endif
+
+    # If we're building thumb, strip out .arm files.
+    ifneq (arm,$(LOCAL_ARM_MODE))
+        TAGS_TO_FILTER += arm
+    endif
+
+    # There is no .thumb. No need to filter them out if we're building ARM.
+
+    allowed_src := $(foreach src,$(filter $(all_cpp_patterns),$(LOCAL_SRC_FILES)),\
+        $(if $(filter $(TAGS_TO_FILTER),$(LOCAL_SRC_FILES_TAGS.$(src))),,$(src))\
+    )
+    # All files without tags depend on PCH
+    $(foreach src,$(allowed_src),\
         $(eval $(LOCAL_OBJS_DIR)/$(call get-object-name,$(src)) : $(LOCAL_OBJS_DIR)/$(LOCAL_BUILT_PCH).gch)\
     )
-
-    # Files from now on build with PCH
-    LOCAL_CPPFLAGS += -Winvalid-pch -include $(LOCAL_OBJS_DIR)/$(LOCAL_BUILT_PCH)
+    # Make sure those files are built with PCH
+    $(call add-src-files-target-cflags,$(allowed_src),-Winvalid-pch -include $(LOCAL_OBJS_DIR)/$(LOCAL_BUILT_PCH))
 
     # Insert PCH dir at beginning of include search path
     LOCAL_C_INCLUDES := \
@@ -460,6 +515,14 @@ endif
 
 # Build the sources to object files
 #
+
+# Include RenderScript headers if rs files are found.
+ifneq ($(filter $(all_rs_patterns),$(LOCAL_SRC_FILES)),)
+    LOCAL_C_INCLUDES += \
+        $(RENDERSCRIPT_PLATFORM_HEADER) \
+        $(RENDERSCRIPT_PLATFORM_HEADER)/cpp \
+        $(TARGET_OBJS)/$(LOCAL_MODULE)
+endif
 
 $(foreach src,$(filter %.c,$(LOCAL_SRC_FILES)), $(call compile-c-source,$(src),$(call get-object-name,$(src))))
 $(foreach src,$(filter %.S %.s,$(LOCAL_SRC_FILES)), $(call compile-s-source,$(src),$(call get-object-name,$(src))))
@@ -496,6 +559,11 @@ ifneq ($(filter -l%,$(LOCAL_LDLIBS)),)
     endif
 endif
 
+my_ldflags := $(TARGET_LDFLAGS) $(LOCAL_LDFLAGS) $(NDK_APP_LDFLAGS)
+ifneq ($(filter armeabi%,$(TARGET_ARCH_ABI)),)
+    my_ldflags += $(TARGET_$(my_link_arm_mode)_LDFLAGS)
+endif
+
 # When LOCAL_SHORT_COMMANDS is defined to 'true' we are going to write the
 # list of all object files and/or static/shared libraries that appear on the
 # command line to a file, then use the @<listfile> syntax to invoke it.
@@ -514,7 +582,7 @@ $(LOCAL_BUILT_MODULE): PRIVATE_OBJECTS := $(LOCAL_OBJECTS)
 $(LOCAL_BUILT_MODULE): PRIVATE_LIBGCC := $(TARGET_LIBGCC)
 
 $(LOCAL_BUILT_MODULE): PRIVATE_LD := $(TARGET_LD)
-$(LOCAL_BUILT_MODULE): PRIVATE_LDFLAGS := $(TARGET_LDFLAGS) $(LOCAL_LDFLAGS) $(NDK_APP_LDFLAGS)
+$(LOCAL_BUILT_MODULE): PRIVATE_LDFLAGS := $(my_ldflags)
 $(LOCAL_BUILT_MODULE): PRIVATE_LDLIBS  := $(LOCAL_LDLIBS) $(TARGET_LDLIBS)
 
 $(LOCAL_BUILT_MODULE): PRIVATE_NAME := $(notdir $(LOCAL_BUILT_MODULE))
@@ -544,7 +612,8 @@ ar_objects := $(call host-path,$(LOCAL_OBJECTS))
 ifeq ($(LOCAL_SHORT_COMMANDS),true)
     $(call ndk_log,Building static library module '$(LOCAL_MODULE)' with linker list file)
     ar_list_file := $(LOCAL_OBJS_DIR)/archiver.list
-    $(call generate-list-file,$(ar_objects),$(ar_list_file))
+    $(call generate-list-file,\
+        $(call escape-backslashes,$(ar_objects)),$(ar_list_file))
     ar_objects   := @$(call host-path,$(ar_list_file))
     $(LOCAL_BUILT_MODULE): $(ar_list_file)
 endif
@@ -557,7 +626,7 @@ ifeq (true,$(thin_archive))
 endif
 
 $(LOCAL_BUILT_MODULE): PRIVATE_ABI := $(TARGET_ARCH_ABI)
-$(LOCAL_BUILT_MODULE): PRIVATE_AR := $(TARGET_AR) $(ar_flags)
+$(LOCAL_BUILT_MODULE): PRIVATE_AR := $(TARGET_AR) $(ar_flags) $(TARGET_AR_FLAGS)
 $(LOCAL_BUILT_MODULE): PRIVATE_AR_OBJECTS := $(ar_objects)
 $(LOCAL_BUILT_MODULE): PRIVATE_BUILD_STATIC_LIB := $(cmd-build-static-library)
 
@@ -611,6 +680,26 @@ shared_libs := $(call module-filter-shared-libraries,$(all_libs))
 static_libs := $(call module-filter-static-libraries,$(all_libs))
 whole_static_libs := $(call module-extract-whole-static-libs,$(LOCAL_MODULE),$(static_libs))
 static_libs := $(filter-out $(whole_static_libs),$(static_libs))
+all_defined_libs := $(shared_libs) $(static_libs) $(whole_static_libs)
+undefined_libs := $(filter-out $(all_defined_libs),$(all_libs))
+
+ifdef undefined_libs
+    $(call __ndk_warning,Module $(LOCAL_MODULE) depends on undefined modules: $(undefined_libs))
+
+    # https://github.com/android-ndk/ndk/issues/208
+    # ndk-build didn't used to fail the build for a missing dependency. This
+    # seems to have always been the behavior, so there's a good chance that
+    # there are builds out there that depend on this behavior (as of right now,
+    # anything using libc++ on ARM has this problem because of libunwind).
+    #
+    # By default we will abort in this situation because this is so completely
+    # broken. A user may define APP_ALLOW_MISSING_DEPS to "true" in their
+    # Application.mk or on the command line to revert to the old, broken
+    # behavior.
+    ifneq ($(APP_ALLOW_MISSING_DEPS),true)
+        $(call __ndk_error,Aborting (set APP_ALLOW_MISSING_DEPS=true to allow missing dependencies))
+    endif
+endif
 
 $(call -ndk-mod-debug,module $(LOCAL_MODULE) [$(LOCAL_BUILT_MODULE)])
 $(call -ndk-mod-debug,.  all_libs='$(all_libs)')
