@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 #
 # Copyright (C) 2013 The Android Open Source Project
 #
@@ -17,7 +17,7 @@
 #  This shell script is used to rebuild one of the NDK C++ STL
 #  implementations from sources. To use it:
 #
-#   - Define CXX_STL to one of 'gabi++', 'stlport' or 'libc++'
+#   - Define CXX_STL to one of 'stlport' or 'libc++'
 #   - Run it.
 #
 
@@ -25,7 +25,7 @@
 . `dirname $0`/prebuilt-common.sh
 . `dirname $0`/builder-funcs.sh
 
-CXX_STL_LIST="gabi++ stlport libc++"
+CXX_STL_LIST="stlport libc++"
 
 PROGRAM_PARAMETERS=""
 
@@ -62,8 +62,7 @@ NDK_DIR=
 register_var_option "--ndk-dir=<path>" NDK_DIR "Specify NDK root path for the build."
 
 BUILD_DIR=
-OPTION_BUILD_DIR=
-register_var_option "--build-dir=<path>" OPTION_BUILD_DIR "Specify temporary build dir."
+register_var_option "--build-dir=<path>" BUILD_DIR "Specify temporary build dir."
 
 OUT_DIR=
 register_var_option "--out-dir=<path>" OUT_DIR "Specify output directory directly."
@@ -97,14 +96,6 @@ if [ -n "${LLVM_VERSION}" -a -n "${GCC_VERSION}" ]; then
 fi
 
 ABIS=$(commas_to_spaces $ABIS)
-UNKNOWN_ABIS=
-if [ "$ABIS" = "${ABIS%%64*}" ]; then
-    UNKNOWN_ABIS="$(filter_out "$PREBUILT_ABIS mips32r6" "$ABIS" )"
-    if [ -n "$UNKNOWN_ABIS" ] && [ -n "$(find_ndk_unknown_archs)" ]; then
-        ABIS="$(filter_out "$UNKNOWN_ABIS" "$ABIS")"
-        ABIS="$ABIS $(find_ndk_unknown_archs)"
-    fi
-fi
 
 # Handle NDK_DIR
 if [ -z "$NDK_DIR" ] ; then
@@ -133,8 +124,6 @@ fi
 # Derive runtime, and normalize CXX_STL
 CXX_SUPPORT_LIB=gabi++
 case $CXX_STL in
-  gabi++)
-    ;;
   stlport)
     ;;
   libc++)
@@ -153,11 +142,6 @@ case $CXX_STL in
     ;;
 esac
 
-if [ -z "$OPTION_BUILD_DIR" ]; then
-    BUILD_DIR=$NDK_TMPDIR/build-$CXX_STL
-else
-    BUILD_DIR=$OPTION_BUILD_DIR
-fi
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 fail_panic "Could not create build directory: $BUILD_DIR"
@@ -173,13 +157,7 @@ STLPORT_SRCDIR=$BUILD_DIR/ndk/$STLPORT_SUBDIR
 LIBCXX_SRCDIR=$BUILD_DIR/ndk/$LIBCXX_SUBDIR
 LIBCXXABI_SRCDIR=$BUILD_DIR/ndk/$LIBCXXABI_SUBDIR
 
-if [ "$CXX_SUPPORT_LIB" = "gabi++" ]; then
-    LIBCXX_INCLUDES="-I$LIBCXX_SRCDIR/libcxx/include -I$ANDROID_NDK_ROOT/sources/android/support/include -I$GABIXX_SRCDIR/include"
-elif [ "$CXX_SUPPORT_LIB" = "libc++abi" ]; then
-    LIBCXX_INCLUDES="-I$LIBCXX_SRCDIR/libcxx/include -I$ANDROID_NDK_ROOT/sources/android/support/include -I$LIBCXXABI_SRCDIR/include"
-else
-    panic "Unknown CXX_SUPPORT_LIB: $CXX_SUPPORT_LIB"
-fi
+LIBCXX_INCLUDES="-I$LIBCXX_SRCDIR/libcxx/include -I$ANDROID_NDK_ROOT/sources/android/support/include -I$LIBCXXABI_SRCDIR/include"
 
 COMMON_C_CXX_FLAGS="-fPIC -O2 -ffunction-sections -fdata-sections"
 COMMON_CXXFLAGS="-fexceptions -frtti -fuse-cxa-atexit"
@@ -250,7 +228,7 @@ src/cxa.c"
 # Determine Libc++ build parameters
 LIBCXX_LINKER_SCRIPT=export_symbols.txt
 LIBCXX_CFLAGS="$COMMON_C_CXX_FLAGS $LIBCXX_INCLUDES -Drestrict=__restrict__"
-LIBCXX_CXXFLAGS="$LIBCXX_CFLAGS -DLIBCXXABI=1 -std=c++11"
+LIBCXX_CXXFLAGS="$LIBCXX_CFLAGS -DLIBCXXABI=1 -std=c++11 -D__STDC_FORMAT_MACROS"
 if [ -f "$_BUILD_SRCDIR/$LIBCXX_LINKER_SCRIPT" ]; then
     LIBCXX_LDFLAGS="-Wl,--version-script,\$_BUILD_SRCDIR/$LIBCXX_LINKER_SCRIPT"
 fi
@@ -295,151 +273,24 @@ LIBCXXABI_SOURCES=\
 ../llvm-libc++abi/libcxxabi/src/cxa_handlers.cpp \
 ../llvm-libc++abi/libcxxabi/src/cxa_new_delete.cpp \
 ../llvm-libc++abi/libcxxabi/src/cxa_personality.cpp \
+../llvm-libc++abi/libcxxabi/src/cxa_thread_atexit.cpp \
 ../llvm-libc++abi/libcxxabi/src/cxa_unexpected.cpp \
 ../llvm-libc++abi/libcxxabi/src/cxa_vector.cpp \
 ../llvm-libc++abi/libcxxabi/src/cxa_virtual.cpp \
 ../llvm-libc++abi/libcxxabi/src/exception.cpp \
 ../llvm-libc++abi/libcxxabi/src/private_typeinfo.cpp \
 ../llvm-libc++abi/libcxxabi/src/stdexcept.cpp \
-../llvm-libc++abi/libcxxabi/src/typeinfo.cpp \
-../llvm-libc++abi/libcxxabi/src/Unwind/libunwind.cpp \
+../llvm-libc++abi/libcxxabi/src/typeinfo.cpp
+"
+
+LIBCXXABI_UNWIND_SOURCES=\
+"../llvm-libc++abi/libcxxabi/src/Unwind/libunwind.cpp \
 ../llvm-libc++abi/libcxxabi/src/Unwind/Unwind-EHABI.cpp \
+../llvm-libc++abi/libcxxabi/src/Unwind/Unwind-sjlj.c \
 ../llvm-libc++abi/libcxxabi/src/Unwind/UnwindLevel1.c \
 ../llvm-libc++abi/libcxxabi/src/Unwind/UnwindLevel1-gcc-ext.c \
 ../llvm-libc++abi/libcxxabi/src/Unwind/UnwindRegistersRestore.S \
 ../llvm-libc++abi/libcxxabi/src/Unwind/UnwindRegistersSave.S \
-"
-
-# android/support files for libc++
-SUPPORT32_SOURCES=\
-"../../android/support/src/libdl_support.c \
-../../android/support/src/locale_support.c \
-../../android/support/src/math_support.c \
-../../android/support/src/stdlib_support.c \
-../../android/support/src/wchar_support.c \
-../../android/support/src/locale/duplocale.c \
-../../android/support/src/locale/freelocale.c \
-../../android/support/src/locale/localeconv.c \
-../../android/support/src/locale/newlocale.c \
-../../android/support/src/locale/uselocale.c \
-../../android/support/src/stdio/stdio_impl.c \
-../../android/support/src/stdio/strtod.c \
-../../android/support/src/stdio/vfprintf.c \
-../../android/support/src/stdio/vfwprintf.c \
-../../android/support/src/msun/e_log2.c \
-../../android/support/src/msun/e_log2f.c \
-../../android/support/src/msun/s_nan.c \
-../../android/support/src/musl-multibyte/btowc.c \
-../../android/support/src/musl-multibyte/internal.c \
-../../android/support/src/musl-multibyte/mblen.c \
-../../android/support/src/musl-multibyte/mbrlen.c \
-../../android/support/src/musl-multibyte/mbrtowc.c \
-../../android/support/src/musl-multibyte/mbsinit.c \
-../../android/support/src/musl-multibyte/mbsnrtowcs.c \
-../../android/support/src/musl-multibyte/mbsrtowcs.c \
-../../android/support/src/musl-multibyte/mbstowcs.c \
-../../android/support/src/musl-multibyte/mbtowc.c \
-../../android/support/src/musl-multibyte/wcrtomb.c \
-../../android/support/src/musl-multibyte/wcsnrtombs.c \
-../../android/support/src/musl-multibyte/wcsrtombs.c \
-../../android/support/src/musl-multibyte/wcstombs.c \
-../../android/support/src/musl-multibyte/wctob.c \
-../../android/support/src/musl-multibyte/wctomb.c \
-../../android/support/src/musl-ctype/iswalnum.c \
-../../android/support/src/musl-ctype/iswalpha.c \
-../../android/support/src/musl-ctype/iswblank.c \
-../../android/support/src/musl-ctype/iswcntrl.c \
-../../android/support/src/musl-ctype/iswctype.c \
-../../android/support/src/musl-ctype/iswdigit.c \
-../../android/support/src/musl-ctype/iswgraph.c \
-../../android/support/src/musl-ctype/iswlower.c \
-../../android/support/src/musl-ctype/iswprint.c \
-../../android/support/src/musl-ctype/iswpunct.c \
-../../android/support/src/musl-ctype/iswspace.c \
-../../android/support/src/musl-ctype/iswupper.c \
-../../android/support/src/musl-ctype/iswxdigit.c \
-../../android/support/src/musl-ctype/isxdigit.c \
-../../android/support/src/musl-ctype/towctrans.c \
-../../android/support/src/musl-ctype/wcswidth.c \
-../../android/support/src/musl-ctype/wctrans.c \
-../../android/support/src/musl-ctype/wcwidth.c \
-../../android/support/src/musl-locale/catclose.c \
-../../android/support/src/musl-locale/catgets.c \
-../../android/support/src/musl-locale/catopen.c \
-../../android/support/src/musl-locale/iconv.c \
-../../android/support/src/musl-locale/intl.c \
-../../android/support/src/musl-locale/isalnum_l.c \
-../../android/support/src/musl-locale/isalpha_l.c \
-../../android/support/src/musl-locale/isblank_l.c \
-../../android/support/src/musl-locale/iscntrl_l.c \
-../../android/support/src/musl-locale/isdigit_l.c \
-../../android/support/src/musl-locale/isgraph_l.c \
-../../android/support/src/musl-locale/islower_l.c \
-../../android/support/src/musl-locale/isprint_l.c \
-../../android/support/src/musl-locale/ispunct_l.c \
-../../android/support/src/musl-locale/isspace_l.c \
-../../android/support/src/musl-locale/isupper_l.c \
-../../android/support/src/musl-locale/iswalnum_l.c \
-../../android/support/src/musl-locale/iswalpha_l.c \
-../../android/support/src/musl-locale/iswblank_l.c \
-../../android/support/src/musl-locale/iswcntrl_l.c \
-../../android/support/src/musl-locale/iswctype_l.c \
-../../android/support/src/musl-locale/iswdigit_l.c \
-../../android/support/src/musl-locale/iswgraph_l.c \
-../../android/support/src/musl-locale/iswlower_l.c \
-../../android/support/src/musl-locale/iswprint_l.c \
-../../android/support/src/musl-locale/iswpunct_l.c \
-../../android/support/src/musl-locale/iswspace_l.c \
-../../android/support/src/musl-locale/iswupper_l.c \
-../../android/support/src/musl-locale/iswxdigit_l.c \
-../../android/support/src/musl-locale/isxdigit_l.c \
-../../android/support/src/musl-locale/langinfo.c \
-../../android/support/src/musl-locale/strcasecmp_l.c \
-../../android/support/src/musl-locale/strcoll.c \
-../../android/support/src/musl-locale/strerror_l.c \
-../../android/support/src/musl-locale/strfmon.c \
-../../android/support/src/musl-locale/strftime_l.c \
-../../android/support/src/musl-locale/strncasecmp_l.c \
-../../android/support/src/musl-locale/strxfrm.c \
-../../android/support/src/musl-locale/tolower_l.c \
-../../android/support/src/musl-locale/toupper_l.c \
-../../android/support/src/musl-locale/towctrans_l.c \
-../../android/support/src/musl-locale/towlower_l.c \
-../../android/support/src/musl-locale/towupper_l.c \
-../../android/support/src/musl-locale/wcscoll.c \
-../../android/support/src/musl-locale/wcsxfrm.c \
-../../android/support/src/musl-locale/wctrans_l.c \
-../../android/support/src/musl-locale/wctype_l.c \
-../../android/support/src/musl-math/frexpf.c \
-../../android/support/src/musl-math/frexpl.c \
-../../android/support/src/musl-math/frexp.c \
-../../android/support/src/musl-stdio/swprintf.c \
-../../android/support/src/musl-stdio/vwprintf.c \
-../../android/support/src/musl-stdio/wprintf.c \
-../../android/support/src/musl-stdio/printf.c \
-../../android/support/src/musl-stdio/snprintf.c \
-../../android/support/src/musl-stdio/sprintf.c \
-../../android/support/src/musl-stdio/vprintf.c \
-../../android/support/src/musl-stdio/vsprintf.c \
-../../android/support/src/wcstox/intscan.c \
-../../android/support/src/wcstox/floatscan.c \
-../../android/support/src/wcstox/shgetc.c \
-../../android/support/src/wcstox/wcstod.c \
-../../android/support/src/wcstox/wcstol.c \
-"
-# Replaces broken implementations in x86 libm.so
-SUPPORT32_SOURCES_x86=\
-"../../android/support/src/musl-math/scalbln.c \
-../../android/support/src/musl-math/scalblnf.c \
-../../android/support/src/musl-math/scalblnl.c \
-../../android/support/src/musl-math/scalbnl.c \
-"
-
-# android/support files for libc++
-SUPPORT64_SOURCES=\
-"../../android/support/src/musl-locale/catclose.c \
-../../android/support/src/musl-locale/catgets.c \
-../../android/support/src/musl-locale/catopen.c \
 "
 
 # If the --no-makefile flag is not used, we're going to put all build
@@ -454,16 +305,6 @@ fi
 
 # Define a few common variables based on parameters.
 case $CXX_STL in
-  gabi++)
-    CXX_STL_LIB=libgabi++
-    CXX_STL_SUBDIR=$GABIXX_SUBDIR
-    CXX_STL_SRCDIR=$GABIXX_SRCDIR
-    CXX_STL_CFLAGS=$GABIXX_CFLAGS
-    CXX_STL_CXXFLAGS=$GABIXX_CXXFLAGS
-    CXX_STL_LDFLAGS=$GABIXX_LDFLAGS
-    CXX_STL_SOURCES=$GABIXX_SOURCES
-    CXX_STL_PACKAGE=gabixx
-    ;;
   stlport)
     CXX_STL_LIB=libstlport
     CXX_STL_SUBDIR=$STLPORT_SUBDIR
@@ -514,25 +355,17 @@ build_stl_libs_for_abi ()
 {
     local ARCH BINPREFIX SYSROOT
     local ABI=$1
-    local THUMB="$5"
-    local BUILDDIR="$2"/$THUMB
+    local BUILDDIR="$2"
     local TYPE="$3"
     local DSTDIR="$4"
-    local FLOAT_ABI=""
     local DEFAULT_CFLAGS DEFAULT_CXXFLAGS
     local SRC OBJ OBJECTS EXTRA_CFLAGS EXTRA_CXXFLAGS EXTRA_LDFLAGS LIB_SUFFIX GCCVER
 
     EXTRA_CFLAGS=""
     EXTRA_CXXFLAGS=""
-    EXTRA_LDFLAGS=""
+    EXTRA_LDFLAGS="-Wl,--build-id"
 
     case $ABI in
-        armeabi-v7a-hard)
-            EXTRA_CFLAGS="-mhard-float -D_NDK_MATH_NO_SOFTFP=1"
-            EXTRA_CXXFLAGS="-mhard-float -D_NDK_MATH_NO_SOFTFP=1"
-            EXTRA_LDFLAGS="-Wl,--no-warn-mismatch -lm_hard"
-            FLOAT_ABI="hard"
-            ;;
         arm64-v8a)
             EXTRA_CFLAGS="-mfix-cortex-a53-835769"
             EXTRA_CXXFLAGS="-mfix-cortex-a53-835769"
@@ -543,14 +376,34 @@ build_stl_libs_for_abi ()
             EXTRA_CFLAGS="-mstackrealign"
             EXTRA_CXXFLAGS="-mstackrealign"
             ;;
+        mips)
+            EXTRA_CFLAGS="-mips32"
+            EXTRA_CXXFLAGS="-mips32"
+            EXTRA_LDFLAGS="-mips32"
+            ;;
         mips32r6)
             EXTRA_CFLAGS="-mips32r6"
             EXTRA_CXXFLAGS="-mips32r6"
             EXTRA_LDFLAGS="-mips32r6"
             ;;
+        mips64)
+            EXTRA_CFLAGS="-mips64r6"
+            EXTRA_CXXFLAGS=$EXTRA_CFLAGS
+            ;;
     esac
 
-    if [ -n "$THUMB" ]; then
+    USE_LLVM_UNWIND=
+    case $ABI in
+        armeabi*)
+            EXTRA_CXXFLAGS="$EXTRA_CXXFLAGS -DLIBCXXABI_USE_LLVM_UNWINDER=1"
+            USE_LLVM_UNWIND=true
+            ;;
+        *)
+            EXTRA_CXXFLAGS="$EXTRA_CXXFLAGS -DLIBCXXABI_USE_LLVM_UNWINDER=0"
+            ;;
+    esac
+
+    if [ "$ABI" != "${ABI%%arm*}" -a "$ABI" = "${ABI%%64*}" ] ; then
         EXTRA_CFLAGS="$EXTRA_CFLAGS -mthumb"
         EXTRA_CXXFLAGS="$EXTRA_CXXFLAGS -mthumb"
     fi
@@ -563,7 +416,7 @@ build_stl_libs_for_abi ()
         EXTRA_CXXFLAGS="$EXTRA_CXXFLAGS $SHARED_CXXFLAGS"
     fi
 
-    DSTDIR=$DSTDIR/$CXX_STL_SUBDIR/libs/$ABI/$THUMB
+    DSTDIR=$DSTDIR/$CXX_STL_SUBDIR/libs/$ABI
     LIB_SUFFIX="$(get_lib_suffix_for_abi $ABI)"
 
     mkdir -p "$BUILDDIR"
@@ -583,20 +436,9 @@ build_stl_libs_for_abi ()
     if [ -n "$LLVM_VERSION" -a "$CXX_STL_LIB" = "libc++" ]; then
         # clang3.5+ use integrated-as as default, which has trouble compiling
         # llvm-libc++abi/libcxxabi/src/Unwind/UnwindRegistersRestore.S
-        if [ "$LLVM_VERSION" \> "3.4" ]; then
-            EXTRA_CFLAGS="${EXTRA_CFLAGS} -no-integrated-as"
-            EXTRA_CXXFLAGS="${EXTRA_CXXFLAGS} -no-integrated-as"
-        fi
+        EXTRA_CFLAGS="${EXTRA_CFLAGS} -no-integrated-as"
+        EXTRA_CXXFLAGS="${EXTRA_CXXFLAGS} -no-integrated-as"
         if [ "$ABI" = "armeabi" ]; then
-            # EHABI tables were added as experimental flags in llvm 3.4. In clang3.5+, these
-            # are now the defaults and the flags have been removed. Add these flags
-            # explicitly only for llvm 3.4.
-            if [ "$LLVM_VERSION" = "3.4" ]; then
-                EXTRA_CFLAGS="${EXTRA_CFLAGS} -mllvm -arm-enable-ehabi-descriptors \
-                              -mllvm -arm-enable-ehabi"
-                EXTRA_CXXFLAGS="${EXTRA_CXXFLAGS} -mllvm -arm-enable-ehabi-descriptors \
-                                -mllvm -arm-enable-ehabi"
-            fi
             EXTRA_LDFLAGS="$EXTRA_LDFLAGS -latomic"
         fi
     fi
@@ -612,14 +454,7 @@ build_stl_libs_for_abi ()
         builder_cflags "$DEFAULT_CFLAGS $GABIXX_CFLAGS $EXTRA_CFLAGS"
         builder_cxxflags "$DEFAULT_CXXFLAGS $GABIXX_CXXFLAGS $EXTRA_CXXFLAGS"
         builder_ldflags "$GABIXX_LDFLAGS $EXTRA_LDFLAGS"
-        if [ "$(find_ndk_unknown_archs)" != "$ABI" ]; then
-            builder_sources $GABIXX_SOURCES
-        elif [ "$CXX_STL" = "gabi++" ]; then
-            log "Could not build gabi++ with unknown arch!"
-            exit 1
-        else
-            builder_sources src/delete.cc src/new.cc
-        fi
+        builder_sources $GABIXX_SOURCES
     fi
 
     # Build the runtime sources, except if we're only building GAbi++
@@ -632,7 +467,11 @@ build_stl_libs_for_abi ()
       builder_ldflags "$CXX_STL_LDFLAGS $EXTRA_LDFLAGS"
       builder_sources $CXX_STL_SOURCES
       if [ "$CXX_SUPPORT_LIB" = "libc++abi" ]; then
-          builder_sources $LIBCXXABI_SOURCES
+          if [ "$USE_LLVM_UNWIND" = "true" ]; then
+              builder_sources $LIBCXXABI_SOURCES $LIBCXXABI_UNWIND_SOURCES
+          else
+              builder_sources $LIBCXXABI_SOURCES
+          fi
           builder_ldflags "-ldl"
       fi
       if [ "$CXX_STL" = "libc++" ]; then
@@ -653,12 +492,7 @@ build_stl_libs_for_abi ()
         builder_static_library ${CXX_STL_LIB}_static
     else
         log "Building $DSTDIR/${CXX_STL_LIB}_shared${LIB_SUFFIX}"
-        if [ "$(find_ndk_unknown_archs)" != "$ABI" ]; then
-            builder_shared_library ${CXX_STL_LIB}_shared $LIB_SUFFIX "$FLOAT_ABI"
-        else
-            builder_ldflags "-lm -lc"
-            builder_nostdlib_shared_library ${CXX_STL_LIB}_shared $LIB_SUFFIX # Don't use libgcc
-        fi
+        builder_shared_library ${CXX_STL_LIB}_shared $LIB_SUFFIX
     fi
 
     builder_end
@@ -667,34 +501,22 @@ build_stl_libs_for_abi ()
 for ABI in $ABIS; do
     build_stl_libs_for_abi $ABI "$BUILD_DIR/$ABI/static" "static" "$OUT_DIR"
     build_stl_libs_for_abi $ABI "$BUILD_DIR/$ABI/shared" "shared" "$OUT_DIR"
-    # build thumb version of libraries for 32-bit arm
-    if [ "$ABI" != "${ABI%%arm*}" -a "$ABI" = "${ABI%%64*}" ] ; then
-        build_stl_libs_for_abi $ABI "$BUILD_DIR/$ABI/static" "static" "$OUT_DIR" thumb
-        build_stl_libs_for_abi $ABI "$BUILD_DIR/$ABI/shared" "shared" "$OUT_DIR" thumb
-    fi
 done
 
-# If needed, package files into tarballs
 if [ -n "$PACKAGE_DIR" ] ; then
-    for ABI in $ABIS; do
-        FILES=""
-        LIB_SUFFIX="$(get_lib_suffix_for_abi $ABI)"
-        for LIB in ${CXX_STL_LIB}_static.a ${CXX_STL_LIB}_shared${LIB_SUFFIX}; do
-	    if [ -d "$CXX_STL_SUBDIR/libs/$ABI/thumb" ]; then
-                FILES="$FILES $CXX_STL_SUBDIR/libs/$ABI/thumb/$LIB"
-            fi
-            FILES="$FILES $CXX_STL_SUBDIR/libs/$ABI/$LIB"
-        done
-        PACKAGE="$PACKAGE_DIR/${CXX_STL_PACKAGE}-libs-$ABI"
-        if [ "$WITH_DEBUG_INFO" ]; then
-            PACKAGE="${PACKAGE}-g"
-        fi
-        PACKAGE="${PACKAGE}.tar.bz2"
-        log "Packaging: $PACKAGE"
-        pack_archive "$PACKAGE" "$OUT_DIR" "$FILES"
-        fail_panic "Could not package $ABI $CXX_STL binaries!"
-        dump "Packaging: $PACKAGE"
-    done
+    if [ "$CXX_STL" = "libc++" ]; then
+        STL_DIR="llvm-libc++"
+    elif [ "$CXX_STL" = "stlport" ]; then
+        STL_DIR="stlport"
+    else
+        panic "Unknown STL: $CXX_STL"
+    fi
+
+    make_repo_prop "$OUT_DIR/$CXX_STL_SUBDIR"
+    PACKAGE="$PACKAGE_DIR/${CXX_STL_PACKAGE}.zip"
+    log "Packaging: $PACKAGE"
+    pack_archive "$PACKAGE" "$OUT_DIR/sources/cxx-stl" "$STL_DIR"
+    fail_panic "Could not package $CXX_STL binaries!"
 fi
 
 if [ -z "$OPTION_BUILD_DIR" ]; then

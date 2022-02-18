@@ -41,15 +41,6 @@ ifeq ($(NDK_LOG),true)
     override NDK_LOG := 1
 endif
 
-# Define NDK_HOST_32BIT=1 in your environment to always use toolchain in 32-bit
-# even if 64-bit is present.  Note that toolchains in 64-bit still produce
-# 32-bit binaries for Android
-#
-NDK_HOST_32BIT := $(strip $(NDK_HOST_32BIT))
-ifeq ($(NDK_HOST_32BIT),true)
-    override NDK_HOST_32BIT := 1
-endif
-
 # Check that we have at least GNU Make 3.81
 # We do this by detecting whether 'lastword' is supported
 #
@@ -87,6 +78,9 @@ __ndk_info     = $(info $(__ndk_name): $1 $2 $3 $4 $5)
 __ndk_warning  = $(warning $(__ndk_name): $1 $2 $3 $4 $5)
 __ndk_error    = $(error $(__ndk_name): $1 $2 $3 $4 $5)
 
+ifdef NDK_NO_INFO
+__ndk_info :=
+endif
 ifdef NDK_NO_WARNINGS
 __ndk_warning :=
 endif
@@ -107,21 +101,40 @@ ndk_log :=
 endif
 
 # -----------------------------------------------------------------------------
-# Function : host-prebuilt-tag
-# Arguments: 1: parent path of "prebuilt"
-# Returns  : path $1/prebuilt/(HOST_TAG64) exists and NDK_HOST_32BIT isn't defined to 1,
-#            or $1/prebuilt/(HOST_TAG)
-# Usage    : $(call host-prebuilt-tag, <path>)
-# Rationale: This function is used to proble available 64-bit toolchain or
-#            return 32-bit one as default.  Note that HOST_TAG64==HOST_TAG for
-#            32-bit system (or 32-bit userland in 64-bit system)
+# Function : host-toolchain-path
+# Arguments: 1: NDK root
+#            2: Toolchain name
+# Returns  : The parent path of all toolchains for this host. Note that
+#            HOST_TAG64 == HOST_TAG for 32-bit systems.
 # -----------------------------------------------------------------------------
-ifeq ($(NDK_HOST_32BIT),1)
-host-prebuilt-tag = $1/prebuilt/$(HOST_TAG)
+ifeq ($(NDK_NEW_TOOLCHAINS_LAYOUT),true)
+    host-toolchain-path = $1/$(HOST_TAG64)/$2
 else
-host-prebuilt-tag = \
-   $(if $(strip $(wildcard $1/prebuilt/$(HOST_TAG64))),$1/prebuilt/$(HOST_TAG64),$1/prebuilt/$(HOST_TAG))
+    host-toolchain-path = $1/$2/prebuilt/$(HOST_TAG64)
 endif
+
+# -----------------------------------------------------------------------------
+# Function : get-toolchain-root
+# Arguments: 1: Toolchain name
+# Returns  : Path to the given prebuilt toolchain.
+# -----------------------------------------------------------------------------
+get-toolchain-root = $(call host-toolchain-path,$(NDK_TOOLCHAINS_ROOT),$1)
+
+# -----------------------------------------------------------------------------
+# Function : get-binutils-root
+# Arguments: 1: NDK root
+#            2: Toolchain name (no version number)
+# Returns  : Path to the given prebuilt binutils.
+# -----------------------------------------------------------------------------
+get-binutils-root = $1/binutils/$2
+
+# -----------------------------------------------------------------------------
+# Function : get-gcclibs-path
+# Arguments: 1: NDK root
+#            2: Toolchain name (no version number)
+# Returns  : Path to the given prebuilt gcclibs.
+# -----------------------------------------------------------------------------
+get-gcclibs-path = $1/gcclibs/$2
 
 # ====================================================================
 #
@@ -211,13 +224,6 @@ else
     $(call ndk_log, Host operating system detected: $(HOST_OS))
 endif
 
-# Always use /usr/bin/file on Darwin to avoid relying on broken Ports
-# version. See http://b.android.com/53769 .
-HOST_FILE_PROGRAM := file
-ifeq ($(HOST_OS),darwin)
-HOST_FILE_PROGRAM := /usr/bin/file
-endif
-
 HOST_ARCH := $(strip $(HOST_ARCH))
 HOST_ARCH64 :=
 ifndef HOST_ARCH
@@ -230,24 +236,11 @@ ifndef HOST_ARCH
         ifneq ("/",$(shell echo "%ProgramW6432%/%ProgramFiles(x86)%"))
             HOST_ARCH64 := x86_64
         endif
-    else # HOST_OS_BASE != windows
-        UNAME := $(shell uname -m)
-        ifneq (,$(findstring 86,$(UNAME)))
-            HOST_ARCH := x86
-            ifneq (,$(shell $(HOST_FILE_PROGRAM) -L $(SHELL) | grep 'x86[_-]64'))
-                HOST_ARCH64 := x86_64
-            endif
-        endif
-        # We should probably should not care at all
-        ifneq (,$(findstring Power,$(UNAME)))
-            HOST_ARCH := ppc
-        endif
-        ifeq ($(HOST_ARCH),)
-            $(call __ndk_info,Unsupported host architecture: $(UNAME))
-            $(call __ndk_error,Aborting)
-        endif
-    endif # HOST_OS_BASE != windows
-    $(call ndk_log,Host CPU was auto-detected: $(HOST_ARCH))
+        $(call ndk_log,Host CPU was auto-detected: $(HOST_ARCH))
+    else
+        HOST_ARCH := x86
+        HOST_ARCH64 := x86_64
+    endif
 else
     $(call ndk_log,Host CPU from environment: $(HOST_ARCH))
 endif
@@ -271,11 +264,9 @@ ifeq ($(HOST_OS),windows)
   HOST_EXEEXT := .exe
 endif
 
-# If we are on Windows, we need to check that we are not running
-# Cygwin 1.5, which is deprecated and won't run our toolchain
-# binaries properly.
-#
 ifeq ($(HOST_TAG),windows-x86)
+    # If we are on Windows, we need to check that we are not running Cygwin 1.5,
+    # which is deprecated and won't run our toolchain binaries properly.
     ifeq ($(HOST_OS),cygwin)
         # On cygwin, 'uname -r' returns something like 1.5.23(0.225/5/3)
         # We recognize 1.5. as the prefix to look for then.
@@ -286,16 +277,22 @@ ifeq ($(HOST_TAG),windows-x86)
             $(call __ndk_error,Aborting.)
         endif
     endif
+
     # special-case the host-tag
     HOST_TAG := windows
+
+    # For 32-bit systems, HOST_TAG64 should be HOST_TAG, but we just updated
+    # HOST_TAG, so update HOST_TAG64 to match.
+    ifeq ($(HOST_ARCH64),x86)
+        HOST_TAG64 = $(HOST_TAG)
+    endif
 endif
 
 $(call ndk_log,HOST_TAG set to $(HOST_TAG))
 
 # Check for NDK-specific versions of our host tools
-HOST_PREBUILT_ROOT := $(call host-prebuilt-tag, $(NDK_ROOT))
-HOST_PREBUILT := $(strip $(wildcard $(HOST_PREBUILT_ROOT)/bin))
-HOST_AWK := $(strip $(NDK_HOST_AWK))
+HOST_TOOLS_ROOT := $(NDK_ROOT)/prebuilt/$(HOST_TAG64)
+HOST_PREBUILT := $(strip $(wildcard $(HOST_TOOLS_ROOT)/bin))
 HOST_MAKE := $(strip $(NDK_HOST_MAKE))
 HOST_PYTHON := $(strip $(NDK_HOST_PYTHON))
 ifdef HOST_PREBUILT
@@ -303,9 +300,6 @@ ifdef HOST_PREBUILT
     # The windows prebuilt binaries are for ndk-build.cmd
     # On cygwin, we must use the Cygwin version of these tools instead.
     ifneq ($(HOST_OS),cygwin)
-        ifndef HOST_AWK
-            HOST_AWK := $(wildcard $(HOST_PREBUILT)/awk$(HOST_EXEEXT))
-        endif
         ifndef HOST_MAKE
             HOST_MAKE := $(wildcard $(HOST_PREBUILT)/make$(HOST_EXEEXT))
         endif
@@ -315,6 +309,9 @@ ifdef HOST_PREBUILT
     endif
 else
     $(call ndk_log,Host tools prebuilt directory not found, using system tools)
+endif
+ifndef HOST_PYTHON
+    HOST_PYTHON := python
 endif
 
 HOST_ECHO := $(strip $(NDK_HOST_ECHO))
@@ -353,25 +350,8 @@ ifndef HOST_CMP
 endif
 $(call ndk_log,Host 'cmp' tool: $(HOST_CMP))
 
-#
-# Verify that the 'awk' tool has the features we need.
-# Both Nawk and Gawk do.
-#
-HOST_AWK := $(strip $(HOST_AWK))
-ifndef HOST_AWK
-    HOST_AWK := awk
-endif
-$(call ndk_log,Host 'awk' tool: $(HOST_AWK))
-
-# Location of all awk scripts we use
-BUILD_AWK := $(NDK_ROOT)/build/awk
-
-AWK_TEST := $(shell $(HOST_AWK) -f $(BUILD_AWK)/check-awk.awk)
-$(call ndk_log,Host 'awk' test returned: $(AWK_TEST))
-ifneq ($(AWK_TEST),Pass)
-    $(call __ndk_info,Host 'awk' tool is outdated. Please define NDK_HOST_AWK to point to Gawk or Nawk !)
-    $(call __ndk_error,Aborting.)
-endif
+# Location of python build helpers.
+BUILD_PY := $(NDK_ROOT)/build
 
 #
 # On Cygwin/MSys, define the 'cygwin-to-host-path' function here depending on the
@@ -418,12 +398,9 @@ ifeq ($(HOST_OS),cygwin)
         $(call ndk_log, Forced usage of 'cygpath -m' through NDK_USE_CYGPATH=1)
         cygwin-to-host-path = $(strip $(shell $(CYGPATH) -m $1))
     else
-        # Call an awk script to generate a Makefile fragment used to define a function
-        WINDOWS_HOST_PATH_FRAGMENT := $(shell mount | tr '\\' '/' | $(HOST_AWK) -f $(BUILD_AWK)/gen-windows-host-path.awk)
-        ifeq ($(NDK_LOG),1)
-            $(info Using cygwin substitution rules:)
-            $(eval $(shell mount | tr '\\' '/' | $(HOST_AWK) -f $(BUILD_AWK)/gen-windows-host-path.awk -vVERBOSE=1))
-        endif
+        # Call a Python script to generate a Makefile function that approximates
+        # cygpath.
+        WINDOWS_HOST_PATH_FRAGMENT := $(shell mount | $(HOST_PYTHON) $(BUILD_PY)/gen_cygpath.py)
         $(eval cygwin-to-host-path = $(WINDOWS_HOST_PATH_FRAGMENT))
     endif
 endif # HOST_OS == cygwin
@@ -461,8 +438,6 @@ ifndef NDK_PLATFORMS_ROOT
         $(call __ndk_info,Could not find platform files (headers and libraries))
         $(if $(strip $(wildcard $(NDK_ROOT)/RELEASE.TXT)),\
             $(call __ndk_info,Please define NDK_PLATFORMS_ROOT to point to a valid directory.)\
-        ,\
-            $(call __ndk_info,Please run build/tools/gen-platforms.sh to build the corresponding directory.)\
         )
         $(call __ndk_error,Aborting)
     endif
@@ -484,22 +459,29 @@ $(foreach _platform,$(NDK_ALL_PLATFORMS),\
 
 # we're going to find the maximum platform number of the form android-<number>
 # ignore others, which could correspond to special and experimental cases
-NDK_PREVIEW_LEVEL := L
 NDK_ALL_PLATFORM_LEVELS := $(filter android-%,$(NDK_ALL_PLATFORMS))
 NDK_ALL_PLATFORM_LEVELS := $(patsubst android-%,%,$(NDK_ALL_PLATFORM_LEVELS))
-ifneq (,$(filter $(NDK_PREVIEW_LEVEL),$(NDK_ALL_PLATFORM_LEVELS)))
-    $(call __ndk_info,Please remove stale preview platforms/android-$(NDK_PREVIEW_LEVEL))
-    $(call __ndk_info,API level android-L is renamed as android-21.)
-    $(call __ndk_error,Aborting)
-endif
 $(call ndk_log,Found stable platform levels: $(NDK_ALL_PLATFORM_LEVELS))
+
+NDK_MIN_PLATFORM_LEVEL := 14
+NDK_MIN_PLATFORM := android-$(NDK_MIN_PLATFORM_LEVEL)
 
 NDK_MAX_PLATFORM_LEVEL := 3
 $(foreach level,$(NDK_ALL_PLATFORM_LEVELS),\
   $(eval NDK_MAX_PLATFORM_LEVEL := $$(call max,$$(NDK_MAX_PLATFORM_LEVEL),$$(level)))\
 )
+NDK_MAX_PLATFORM := android-$(NDK_MAX_PLATFORM_LEVEL)
 
 $(call ndk_log,Found max platform level: $(NDK_MAX_PLATFORM_LEVEL))
+
+# Allow the user to point at an alternate location for the toolchains. This is
+# particularly helpful if we want to use prebuilt toolchains for building an NDK
+# module. Specifically, we use this to build libc++ using ndk-build instead of
+# the old build-cxx-stl.sh and maintaining two sets of build rules.
+NDK_TOOLCHAINS_ROOT := $(strip $(NDK_TOOLCHAINS_ROOT))
+ifndef NDK_TOOLCHAINS_ROOT
+    NDK_TOOLCHAINS_ROOT := $(strip $(NDK_ROOT)/toolchains)
+endif
 
 # ====================================================================
 #
@@ -520,34 +502,19 @@ $(call ndk_log,Found max platform level: $(NDK_MAX_PLATFORM_LEVEL))
 # the build script to include in each toolchain config.mk
 ADD_TOOLCHAIN := $(BUILD_SYSTEM)/add-toolchain.mk
 
-# the list of known abis and archs
-NDK_KNOWN_DEVICE_ABI64S := arm64-v8a x86_64 mips64
-NDK_KNOWN_DEVICE_ABI32S := armeabi-v7a armeabi x86 mips
-NDK_KNOWN_DEVICE_ABIS := $(NDK_KNOWN_DEVICE_ABI64S) $(NDK_KNOWN_DEVICE_ABI32S)
-NDK_KNOWN_ABIS     := armeabi-v7a-hard $(NDK_KNOWN_DEVICE_ABIS)
-NDK_KNOWN_ABI32S   := armeabi-v7a-hard $(NDK_KNOWN_DEVICE_ABI32S)
-NDK_KNOWN_ARCHS    := arm x86 mips arm64 x86_64 mips64
-_archs := $(sort $(strip $(notdir $(wildcard $(NDK_PLATFORMS_ROOT)/android-*/arch-*))))
-NDK_FOUND_ARCHS    := $(_archs:arch-%=%)
+# ABI information is kept in meta/abis.json so it can be shared among multiple
+# build systems. Use Python to convert the JSON into make, replace the newlines
+# as necessary (make helpfully turns newlines into spaces for us...
+# https://www.gnu.org/software/make/manual/html_node/Shell-Function.html) and
+# eval the result.
+$(eval $(subst %NEWLINE%,$(newline),$(shell $(HOST_PYTHON) \
+    $(BUILD_PY)/import_abi_metadata.py $(NDK_ROOT)/meta/abis.json)))
 
-# the list of abis 'APP_ABI=all' is expanded to
-ifneq (,$(filter yes all all32 all64,$(_NDK_TESTING_ALL_)))
-NDK_APP_ABI_ALL_EXPANDED := $(NDK_KNOWN_ABIS)
-NDK_APP_ABI_ALL32_EXPANDED := $(NDK_KNOWN_ABI32S)
-else
+NDK_KNOWN_DEVICE_ABIS := $(NDK_KNOWN_DEVICE_ABI64S) $(NDK_KNOWN_DEVICE_ABI32S)
+
 NDK_APP_ABI_ALL_EXPANDED := $(NDK_KNOWN_DEVICE_ABIS)
 NDK_APP_ABI_ALL32_EXPANDED := $(NDK_KNOWN_DEVICE_ABI32S)
-endif
 NDK_APP_ABI_ALL64_EXPANDED := $(NDK_KNOWN_DEVICE_ABI64S)
-
-# For testing purpose
-ifeq ($(_NDK_TESTING_ALL_),all32)
-NDK_APP_ABI_ALL_EXPANDED := $(NDK_APP_ABI_ALL32_EXPANDED)
-else
-ifeq ($(_NDK_TESTING_ALL_),all64)
-NDK_APP_ABI_ALL_EXPANDED := $(NDK_APP_ABI_ALL64_EXPANDED)
-endif
-endif
 
 # The first API level ndk-build enforces -fPIE for executable
 NDK_FIRST_PIE_PLATFORM_LEVEL := 16
@@ -557,7 +524,7 @@ NDK_ALL_TOOLCHAINS :=
 NDK_ALL_ABIS       :=
 NDK_ALL_ARCHS      :=
 
-TOOLCHAIN_CONFIGS := $(wildcard $(NDK_ROOT)/toolchains/*/config.mk)
+TOOLCHAIN_CONFIGS := $(wildcard $(NDK_ROOT)/build/core/toolchains/*/config.mk)
 $(foreach _config_mk,$(TOOLCHAIN_CONFIGS),\
   $(eval include $(BUILD_SYSTEM)/add-toolchain.mk)\
 )
@@ -599,11 +566,16 @@ endif
 #
 #    arm -> arm-linux-androideabi-4.9
 #    x86 -> x86-android-linux-4.9
-#    mips -> mipsel-linux-android-4.9
+#    mips -> mips64el-linux-android-4.9
 #
 # This is used in setup-toolchain.mk
 #
 NDK_TOOLCHAIN_VERSION := $(strip $(NDK_TOOLCHAIN_VERSION))
+
+# Default to Clang.
+ifeq ($(NDK_TOOLCHAIN_VERSION),)
+    NDK_TOOLCHAIN_VERSION := clang
+endif
 
 $(call ndk_log, This NDK supports the following target architectures and ABIS:)
 $(foreach arch,$(NDK_ALL_ARCHS),\

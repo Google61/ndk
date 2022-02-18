@@ -1,4 +1,4 @@
-prefix=/tmp/ndk-andrewhsieh/buildhost/install/prebuilt/linux-x86_64
+prefix=/buildbot/tmp/buildhost/linux-x86_64/install/host-tools
 exec_prefix=${prefix}
 libdir=${exec_prefix}/lib
 includedir=${prefix}/include
