@@ -16,8 +16,7 @@ jobs:
     - name: LFS
       run: |
         git lfs install
-        find . -type f -size +100M | sed -e 's/$/filter=lfs diff=lfs merge=lfs -text/'>>.gitattributes
-        cat .gitattributes
+        find . -type f -size +100M | sed -e 's/$/ filter=lfs diff=lfs merge=lfs -text/'>>.gitattributes
 
     - uses: stefanzweifel/git-auto-commit-action@v4
       with:
