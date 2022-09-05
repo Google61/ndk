@@ -1,9 +1,24 @@
-# ndk
+Android NDK
+===========
 
-Hi! This is archive of some Android NDK releases.  
-Explore them in branches  
+Documentation
+-------------
 
-If you want to get some other specific version, use [blank.yml](https://github.com/Google61/ndk/blob/r10e/.github/workflows/blank.yml)  
-(I mean there's nothing simpler than these ymls but just in case :)
+NDK documentation, guides, and API reference are available on
+[our website](https://developer.android.com/ndk/index.html).
 
-Also [explore r10e documentation](https://google61.github.io/ndk/)
+NDK code samples are available on
+[GitHub](https://github.com/googlesamples/android-ndk).
+
+Information about Android Studio can be found on [the Android Studio
+website](https://developer.android.com/studio/index.html).
+
+Filing Bugs
+-----------
+
+NDK bugs should be filed on
+[GitHub](https://github.com/android-ndk/ndk/issues/new).
+
+Android Studio and Gradle bugs should be filed in the [Android Studio Bug
+Tracker](http://b.android.com). For the fastest response, make sure you follow
+their guide on [Filing Bugs](http://tools.android.com/filing-bugs).
