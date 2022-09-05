@@ -11,11 +11,9 @@ jobs:
     - uses: actions/checkout@v2
    
     - name: Copy NDK
-      run: cp -R $ANDROID_NDK_HOME/* .
-      
-    - name: .gitignore
-      run: find . -size +100M | cat >> .gitignore
+      run: cp -R $ANDROID_NDK_HOME/* . && echo ignore="$(find . -size +100M | sed -e 's/^/!/')">>$GITHUB_ENV
 
     - uses: stefanzweifel/git-auto-commit-action@v4
       with:
         commit_message: NDK
+        file_pattern: ${{ env.ignore }}
