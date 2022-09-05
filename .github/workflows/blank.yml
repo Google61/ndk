@@ -12,6 +12,12 @@ jobs:
    
     - name: Copy NDK
       run: cp -R $ANDROID_NDK_HOME/* .
+      
+    - name: LFS
+      run: |
+        git lfs install
+        find . -type f -size +100M | sed -e 's/$/filter=lfs diff=lfs merge=lfs -text/'>>.gitattributes
+        cat .gitattributes
 
     - uses: stefanzweifel/git-auto-commit-action@v4
       with:
