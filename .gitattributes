@@ -1,4 +1,0 @@
-./toolchains/llvm/prebuilt/linux-x86_64/bin/clang-14 filter=lfs diff=lfs merge=lfs -text
-./toolchains/llvm/prebuilt/linux-x86_64/lib64/libclang.so.13 filter=lfs diff=lfs merge=lfs -text
-./toolchains/llvm/prebuilt/linux-x86_64/lib64/liblldb.so.14.0.6git filter=lfs diff=lfs merge=lfs -text
-./toolchains/llvm/prebuilt/linux-x86_64/lib64/libclang-cpp.so.14git filter=lfs diff=lfs merge=lfs -text
