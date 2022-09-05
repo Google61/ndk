@@ -13,7 +13,7 @@ jobs:
     - name: Copy NDK
       run: | 
             cp -R $ANDROID_NDK_HOME/* .
-            ignore="$(find . -size +100M | sed -e 's/^/!/')"
+            ignore="$(find . -size +100M | sed -e 's/^/!/' | tr '\n' ' ')"
             echo "ignore=\"$ignore\"">>$GITHUB_ENV
 
     - uses: stefanzweifel/git-auto-commit-action@v4
